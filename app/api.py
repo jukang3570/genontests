@@ -151,7 +151,7 @@ def create_app(
             ),
             corrective_action=(
                 "로그의 validation_errors loc 필드와 app/models.py의 "
-                "StreamingChatRequest 스키마를 비교해 프론트/WAS 요청을 수정하세요."
+                "요청 경로에 연결된 Pydantic 스키마와 비교해 호출 본문을 수정하세요."
             ),
             retry_count=0,
             context={
@@ -475,6 +475,119 @@ def create_app(
             "session_id": session_id,
             "deleted_message_count": deleted_messages,
         }
+
+    @app.post("/chat")
+    @timed("GenOS 코드서빙 워크플로우 채팅")
+    async def code_serving_chat(body: dict[str, Any]) -> dict[str, Any]:
+        """GenOS 워크플로우 규격을 내부 채팅 그래프에 연결한다."""
+
+        question = body.get("question")
+        if not isinstance(question, str):
+            question = ""
+        question = question.strip()
+        if question == "__verify__":
+            return {"code": 0, "data": {"text": "verified"}}
+        if not question:
+            return {
+                "code": 0,
+                "data": {"text": "[ERROR] question is empty"},
+            }
+
+        raw_override_config = body.get("overrideConfig")
+        override_config = (
+            raw_override_config
+            if isinstance(raw_override_config, dict)
+            else {}
+        )
+        session_id = _code_serving_identifier(
+            override_config.get("session_id")
+            or override_config.get("sessionId"),
+            prefix="session",
+        )
+        employee_id = _code_serving_identifier(
+            override_config.get("employee_id")
+            or override_config.get("employeeId")
+            or override_config.get("user_id")
+            or override_config.get("userId"),
+            prefix="codeserving",
+        )
+        raw_agent_code = (
+            override_config.get("agent_code")
+            or override_config.get("agentCode")
+        )
+        agent_code = (
+            raw_agent_code.strip().upper()
+            if isinstance(raw_agent_code, str) and raw_agent_code.strip()
+            else None
+        )
+        if agent_code is not None and agent_code not in prompt.agent_codes:
+            return {
+                "code": 0,
+                "data": {
+                    "text": (
+                        "[ERROR] 등록되지 않은 agent_code입니다: "
+                        f"{agent_code}"
+                    )
+                },
+            }
+
+        thread_id = str(uuid4())
+        request_id = f"{settings.project_code}:{uuid4()}"
+        with log_context(
+            request_id=request_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            user_id=employee_id,
+        ):
+            logger.info(
+                "======== 코드서빙 워크플로우 질문 도착 | 질문길이=%d | "
+                "선택에이전트=%s | 전달이력개수=%d",
+                len(question),
+                agent_code or "선택하지 않음",
+                len(body.get("history", []))
+                if isinstance(body.get("history"), list)
+                else 0,
+            )
+            graph: MasterIntentGraph = app.state.graph
+            result = await graph.start(
+                thread_id=thread_id,
+                employee_id=employee_id,
+                session_id=session_id,
+                message=question,
+                frontend_agent_code=agent_code,
+            )
+
+            if result.status == "INPUT_REQUIRED":
+                interrupt = result.interrupt or {}
+                prompt_text = interrupt.get("message")
+                if not isinstance(prompt_text, str) or not prompt_text.strip():
+                    prompt_text = "추가 입력이 필요합니다."
+                return {"code": 0, "data": {"text": prompt_text}}
+
+            prepared = await answer_service.prepare(result)
+            answer_parts: list[str] = []
+            async for token in prepared.tokens:
+                if token:
+                    answer_parts.append(token)
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                answer = "조회 결과가 없습니다. 잠시 후 다시 시도해 주세요."
+
+            if (
+                result.status == "PASS"
+                and result.classification.agent_code is not None
+            ):
+                await history_store.append_message(
+                    employee_id=employee_id,
+                    session_id=session_id,
+                    agent_code=result.classification.agent_code,
+                    role="assistant",
+                    content=answer,
+                    message_id=str(uuid4()),
+                    metadata={"renderables": prepared.renderables},
+                )
+
+            return {"code": 0, "data": {"text": answer}}
 
     @app.post("/v1/chat", response_model=ChatResponse)
     @timed(
@@ -1098,6 +1211,19 @@ def _resolve_employee_id(
         return user.id
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:24]
     return f"anonymous_{digest}"
+
+
+def _code_serving_identifier(value: Any, *, prefix: str) -> str:
+    """외부 코드서빙 식별자를 내부 키에 사용할 수 있는 값으로 정규화한다."""
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", normalized):
+            return normalized
+        if normalized:
+            digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+            return f"{prefix}_{digest}"
+    return f"{prefix}_{uuid4().hex}"
 
 
 def _derive_recruitment_org_type_code(
