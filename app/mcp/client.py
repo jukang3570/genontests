@@ -78,6 +78,11 @@ class GenosMcpToolExecutor:
             )
 
         self._settings = settings
+        mcp_url = (
+            settings.genos_mcp_url
+            if settings.mcp_backend == "http"
+            else "mock://local"
+        )
         self._http_client = (
             httpx.AsyncClient(
                 timeout=settings.mcp_timeout_seconds,
@@ -99,7 +104,7 @@ class GenosMcpToolExecutor:
             "payload설정파일=app/mcp/payloads.py | "
             "HTTP호출코드=app/mcp/client.py:GenosMcpToolExecutor.execute",
             settings.mcp_backend,
-            settings.genos_mcp_url,
+            mcp_url,
             settings.mcp_timeout_seconds,
             settings.mcp_max_retries,
         )

@@ -52,7 +52,9 @@ class Settings:
     # guide.ipynb와 동일하게 GenOS Gateway MCP를 HTTP로 호출한다.
     # mock은 외부 네트워크를 사용하지 않는 단위 테스트에서만 명시적으로 사용한다.
     mcp_backend: str = "http"
-    mcp_id: int = 551
+    # MCP 서버는 환경별로 달라질 수 있으므로 코드 기본값을 두지 않는다.
+    # HTTP 백엔드에서는 Settings.from_env가 MCP_ID 필수 여부를 검증한다.
+    mcp_id: int | None = None
     mcp_bearer_token: str | None = None
     mcp_timeout_seconds: float = 30.0
     # httpx 연결 재시도 횟수이다. 0이면 최초 연결 실패를 즉시 발생시킨다.
@@ -78,6 +80,13 @@ class Settings:
         """환경변수와 비밀이 아닌 기본값으로 설정 객체를 만든다."""
 
         project_code = os.getenv("PROJECT_CODE", "acqsc").strip().casefold()
+        mcp_backend = os.getenv("MCP_BACKEND", "http").casefold()
+        raw_mcp_id = os.getenv("MCP_ID", "").strip()
+        if mcp_backend == "http" and not raw_mcp_id:
+            raise ValueError(
+                "MCP_BACKEND=http인 경우 환경변수 MCP_ID가 필요합니다."
+            )
+        mcp_id = int(raw_mcp_id) if raw_mcp_id else None
         # 프로젝트 코드는 모든 Redis 키의 첫 번째 구간에 사용하므로
         # 구분자인 콜론이나 공백이 들어가지 않도록 제한한다.
         if not re.fullmatch(r"[a-z0-9_-]+", project_code):
@@ -121,8 +130,8 @@ class Settings:
             redis_hitl_ttl_seconds=int(
                 os.getenv("REDIS_HITL_TTL_SECONDS", "3600")
             ),
-            mcp_backend=os.getenv("MCP_BACKEND", "http").casefold(),
-            mcp_id=int(os.getenv("MCP_ID", "551")),
+            mcp_backend=mcp_backend,
+            mcp_id=mcp_id,
             mcp_bearer_token=os.getenv("MCP_BEARER_TOKEN"),
             mcp_timeout_seconds=float(
                 os.getenv("MCP_TIMEOUT_SECONDS", "30")
@@ -200,6 +209,8 @@ class Settings:
     def genos_mcp_url(self) -> str:
         """guide.ipynb와 동일한 GenOS Gateway MCP 엔드포인트를 반환한다."""
 
+        if self.mcp_id is None:
+            raise ValueError("MCP 호출에는 환경변수 MCP_ID가 필요합니다.")
         return f"{self.genos_url}/api/gateway/mcp/{self.mcp_id}/mcp"
 
     @property
