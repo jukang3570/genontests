@@ -190,6 +190,19 @@ def create_app(
         )
         return FileResponse(html_path, media_type="text/html")
 
+    @app.get("/chatting", include_in_schema=False)
+    @timed("채팅 전용 화면")
+    async def chatting() -> FileResponse:
+        """진단 정보 없이 질문과 답변만 제공하는 채팅 화면을 반환한다."""
+
+        html_path = (
+            Path(__file__).resolve().parents[1]
+            / "static"
+            / "chatting.html"
+        )
+        logger.info("======== 채팅 전용 화면 요청 | 파일=%s", html_path)
+        return FileResponse(html_path, media_type="text/html")
+
     @app.get("/v1/metadata")
     @timed("채팅 메타데이터 API")
     async def metadata() -> dict[str, Any]:
@@ -533,6 +546,30 @@ def create_app(
 
         thread_id = str(uuid4())
         request_id = f"{settings.project_code}:{uuid4()}"
+        raw_access_token = (
+            override_config.get("access_token")
+            or override_config.get("accessToken")
+            or ""
+        )
+        access_token = (
+            raw_access_token.strip()
+            if isinstance(raw_access_token, str)
+            else ""
+        )
+        if access_token.casefold().startswith("bearer "):
+            access_token = access_token[7:].strip()
+        request_context = {
+            "access_token": access_token,
+            "endpoint": settings.project_code,
+            "recruitment_org_type_code": (
+                _derive_recruitment_org_type_code(employee_id)
+            ),
+            "user": {
+                "id": employee_id,
+                "deptcode": None,
+                "deptname": None,
+            },
+        }
         with log_context(
             request_id=request_id,
             session_id=session_id,
@@ -555,6 +592,7 @@ def create_app(
                 session_id=session_id,
                 message=question,
                 frontend_agent_code=agent_code,
+                request_context=request_context,
             )
 
             if result.status == "INPUT_REQUIRED":

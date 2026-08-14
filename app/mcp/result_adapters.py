@@ -72,6 +72,7 @@ def filter_mcp_data(
     selected_columns = {
         str(column).strip() for column in columns if str(column).strip()
     }
+    include_all_columns = "*" in selected_columns
     selected_data: list[dict[str, Any]] = []
     for index, item in enumerate(raw_data):
         if not isinstance(item, Mapping):
@@ -83,7 +84,7 @@ def filter_mcp_data(
             raise McpResultFormatError(
                 f"structuredContent.data[{index}].objId가 올바르지 않습니다."
             )
-        if obj_id.strip() in selected_columns:
+        if include_all_columns or obj_id.strip() in selected_columns:
             selected_data.append(dict(item))
     return selected_data
 
@@ -142,11 +143,29 @@ def format_performance_summary_total(
 ) -> ScenarioAnswer:
     """실적 종합 조회 최종 답변."""
 
-    return _two_column_answer(
-        data,
-        title="실적 종합 조회 결과",
-        first_label="환산점수",
-        second_label="실적건수",
+    rows = [
+        (item.get("objId", ""), item.get("objVal", ""))
+        for item in data
+    ]
+    text = "[실적 종합 조회 결과]"
+    if rows:
+        text += "\n" + "\n".join(
+            f"- {_value_text(name)}: {_value_text(value)}"
+            for name, value in rows
+        )
+    else:
+        text += "\n- 조회된 실적 항목이 없습니다."
+    return ScenarioAnswer(
+        text=text,
+        renderables=[
+            create_table_renderable(
+                code="result-table",
+                title="실적 종합 조회 결과",
+                format="markdown",
+                columns=("항목", "값"),
+                rows=rows,
+            )
+        ],
     )
 
 
@@ -352,7 +371,9 @@ def format_rp_composite_excluded(
 # 답변 모양이 바뀌면 연결된 format_* 함수 본문만 수정한다.
 SCENARIO_QUERY_CONFIGS: dict[tuple[str, str], ScenarioQueryConfig] = {
     ("PERFORMANCE_FEE", "PERFORMANCE_SUMMARY_TOTAL"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
+        # 실제 EAI 응답의 objId 전체를 보존한다. 운영 명칭이 확정되면 필요한
+        # objId만 명시하고 format_performance_summary_total에서 한글 라벨을 매핑한다.
+        columns=("*",),
         answer_formatter=format_performance_summary_total,
     ),
     ("PERFORMANCE_FEE", "COMPOSITE_CONVERSION_SCORE"): ScenarioQueryConfig(

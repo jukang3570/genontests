@@ -52,7 +52,7 @@ class Settings:
     # guide.ipynb와 동일하게 GenOS Gateway MCP를 HTTP로 호출한다.
     # mock은 외부 네트워크를 사용하지 않는 단위 테스트에서만 명시적으로 사용한다.
     mcp_backend: str = "http"
-    mcp_id: int = 475
+    mcp_id: int = 551
     mcp_bearer_token: str | None = None
     mcp_timeout_seconds: float = 30.0
     # httpx 연결 재시도 횟수이다. 0이면 최초 연결 실패를 즉시 발생시킨다.
@@ -122,7 +122,7 @@ class Settings:
                 os.getenv("REDIS_HITL_TTL_SECONDS", "3600")
             ),
             mcp_backend=os.getenv("MCP_BACKEND", "http").casefold(),
-            mcp_id=int(os.getenv("MCP_ID", "475")),
+            mcp_id=int(os.getenv("MCP_ID", "551")),
             mcp_bearer_token=os.getenv("MCP_BEARER_TOKEN"),
             mcp_timeout_seconds=float(
                 os.getenv("MCP_TIMEOUT_SECONDS", "30")

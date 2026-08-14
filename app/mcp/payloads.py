@@ -64,10 +64,17 @@ def build_mcp_payload(
             )
             return _make_payload(
                 request_id,
-                tool_name="test_tool",
+                tool_name="performance_get_summary",
                 arguments={
-                    "param1": closing_month,
-                    "param2": reference_date,
+                    "bearerToken": _text(
+                        request_context.get("access_token")
+                    ),
+                    "arOgDvC": _text(
+                        request_context.get("recruitment_org_type_code")
+                    ),
+                    "clWkYm": closing_month,
+                    "bsdt": reference_date,
+                    "atrRgno": employee_id,
                 },
             )
 
