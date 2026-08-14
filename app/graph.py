@@ -668,7 +668,10 @@ class MasterIntentGraph:
             state["thread_id"],
             interrupt["type"],
         )
-        return {}
+        # LangGraph 0.2는 노드가 선언된 상태 키를 하나도 쓰지 않으면
+        # InvalidUpdateError를 발생시킨다. 저장소 반영이 주목적인 노드라도
+        # 현재 HITL 상태를 명시적으로 반환해 유효한 상태 갱신으로 처리한다.
+        return {"status": "INPUT_REQUIRED", "approved": False}
 
     @timed("사용자 질문 Redis 저장")
     async def _persist_user_message(
@@ -699,7 +702,9 @@ class MasterIntentGraph:
             message_id=f"{state['message_id']}:user",
         )
         logger.info("======== Redis 대화 저장 단계 완료")
-        return {}
+        # Redis 저장은 부수효과지만 LangGraph 상태 노드는 최소 한 개의 상태
+        # 키를 반환해야 한다. 기존 message_id를 유지하는 쓰기를 명시한다.
+        return {"message_id": state["message_id"]}
 
     @timed("대화 저장 이후 라우팅")
     def _after_message_persist(
@@ -1112,7 +1117,9 @@ class MasterIntentGraph:
         """승인 완료 후 더 이상 필요 없는 HITL 상태를 삭제한다."""
 
         await self._hitl_store.delete(state["thread_id"])
-        return {}
+        # 삭제 자체는 부수효과이므로 현재 thread_id를 유지하는 상태 쓰기를
+        # 반환해 LangGraph의 빈 업데이트 오류를 방지한다.
+        return {"thread_id": state["thread_id"]}
 
     @timed(
         "LangGraph 신규 실행",
