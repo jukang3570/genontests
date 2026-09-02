@@ -6,12 +6,9 @@ router:
   agents_prompt: "router/agents.md"
 
 agent_code:
-  - "fee_policy"
   - "performance_fee"
-  - "product_guide"
   - "qualification"
   - "rp"
-  - "tablet"
 
 model:
   temperature: 0

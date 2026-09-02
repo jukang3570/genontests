@@ -174,9 +174,7 @@ class _StartCallPlan:
             "message": message,
         }
         if self.conversation_parameter is not None:
-            arguments[self.conversation_parameter] = (
-                f"csv-evaluation-{execution_id}"
-            )
+            arguments[self.conversation_parameter] = f"csv-evaluation-{execution_id}"
         if self.send_frontend_agent_code:
             # 프론트 선택 코드를 전달하지 않아 HITL 없이 마스터 분류 결과로
             # 서브에이전트와 MCP까지 자동 진행한다.
@@ -218,8 +216,7 @@ async def evaluate_pipeline_csv(
 
     if stage not in EVALUATION_STAGES:
         raise EvaluationInputError(
-            "평가 단계가 유효하지 않습니다"
-            f"(허용값: {', '.join(EVALUATION_STAGES)})."
+            f"평가 단계가 유효하지 않습니다(허용값: {', '.join(EVALUATION_STAGES)})."
         )
     input_path = input_path.resolve()
     output_path = output_path.resolve()
@@ -233,9 +230,7 @@ async def evaluate_pipeline_csv(
             "(덮어쓰려면 --overwrite를 사용하세요.)"
         )
     if not output_path.parent.is_dir():
-        raise EvaluationInputError(
-            f"출력 디렉터리가 없습니다: {output_path.parent}"
-        )
+        raise EvaluationInputError(f"출력 디렉터리가 없습니다: {output_path.parent}")
     if row_timeout_seconds <= 0:
         raise EvaluationInputError("행 제한시간은 0보다 커야 합니다.")
     # 그래프 버전마다 start() 인자 구성이 달라 실행 전에 한 번만 확인한다.
@@ -248,8 +243,7 @@ async def evaluate_pipeline_csv(
         if name not in EXCLUDED_OUTPUT_COLUMNS
     ]
     localized_output_fieldnames = [
-        KOREAN_OUTPUT_COLUMN_NAMES.get(name, name)
-        for name in output_fieldnames
+        KOREAN_OUTPUT_COLUMN_NAMES.get(name, name) for name in output_fieldnames
     ]
     now = clock or (lambda: datetime.now(timezone.utc))
     classification_pairs: list[tuple[str, str]] = []
@@ -263,8 +257,7 @@ async def evaluate_pipeline_csv(
     wall_started_at = perf_counter()
 
     logger.info(
-        "평가 시작 | 데이터셋=%s | 단계=%s | 행수=%d | "
-        "대화식별자인자=%s | 결과파일=%s",
+        "평가 시작 | 데이터셋=%s | 단계=%s | 행수=%d | 대화식별자인자=%s | 결과파일=%s",
         input_path.name,
         stage,
         total,
@@ -305,27 +298,20 @@ async def evaluate_pipeline_csv(
             latency_seconds = perf_counter() - row_started_at
             result["latency_seconds"] = f"{latency_seconds:.4f}"
             latencies_seconds.append(latency_seconds)
-            label_latency_samples.append(
-                (evaluation.expected_label, latency_seconds)
-            )
-            result_latency_samples.append(
-                (result["test_result"], latency_seconds)
-            )
+            label_latency_samples.append((evaluation.expected_label, latency_seconds))
+            result_latency_samples.append((result["test_result"], latency_seconds))
             if evaluation.classification_pair is not None:
                 classification_pairs.append(evaluation.classification_pair)
             counts[result["test_result"]] += 1
             merged_row = {**row, **result}
             result_writer.write(
                 {
-                    KOREAN_OUTPUT_COLUMN_NAMES.get(name, name): (
-                        merged_row[name]
-                    )
+                    KOREAN_OUTPUT_COLUMN_NAMES.get(name, name): (merged_row[name])
                     for name in output_fieldnames
                 }
             )
             logger.info(
-                "[%*d/%d %5.1f%%] %-5s %-8s %-20s %s | 누적 P%d/F%d/E%d"
-                " | 잔여 ~%s%s",
+                "[%*d/%d %5.1f%%] %-5s %-8s %-20s %s | 누적 P%d/F%d/E%d | 잔여 ~%s%s",
                 len(str(total)),
                 index,
                 total,
@@ -471,20 +457,15 @@ def _read_rows(input_path: Path) -> tuple[list[dict[str, str]], list[str]]:
             if len(set(fieldnames)) != len(fieldnames):
                 raise EvaluationInputError("CSV 헤더에 중복 컬럼명이 있습니다.")
 
-            missing = [
-                name for name in REQUIRED_COLUMNS if name not in fieldnames
-            ]
+            missing = [name for name in REQUIRED_COLUMNS if name not in fieldnames]
             if missing:
                 raise EvaluationInputError(
                     "필수 CSV 컬럼이 없습니다: " + ", ".join(missing)
                 )
-            collisions = [
-                name for name in RESULT_COLUMNS if name in fieldnames
-            ]
+            collisions = [name for name in RESULT_COLUMNS if name in fieldnames]
             if collisions:
                 raise EvaluationInputError(
-                    "입력 CSV에 결과용 컬럼이 이미 있습니다: "
-                    + ", ".join(collisions)
+                    "입력 CSV에 결과용 컬럼이 이미 있습니다: " + ", ".join(collisions)
                 )
 
             rows: list[dict[str, str]] = []
@@ -608,9 +589,7 @@ def _parse_expected_values(
                 f"{row_number}행 EMPTY_QUERY의 message는 비어 있어야 합니다."
             )
     elif not message:
-        raise EvaluationInputError(
-            f"{row_number}행 message가 비어 있습니다."
-        )
+        raise EvaluationInputError(f"{row_number}행 message가 비어 있습니다.")
 
     normalized_codes = {code.upper() for code in allowed_agent_codes}
     if classification_type == "AGENT":
@@ -626,8 +605,7 @@ def _parse_expected_values(
             )
     elif agent_code:
         raise EvaluationInputError(
-            f"{row_number}행 예외 분류의 expected_agent_code는 "
-            "비어 있어야 합니다."
+            f"{row_number}행 예외 분류의 expected_agent_code는 비어 있어야 합니다."
         )
 
     default_status = "PASS" if classification_type == "AGENT" else "EXCEPTION"
@@ -650,9 +628,7 @@ def _parse_expected_values(
         "agent_code": agent_code,
         "status": expected_status,
         "scenario_code": row.get("expected_scenario_code", "").strip(),
-        "detail_scenario_code": row.get(
-            "expected_detail_scenario_code", ""
-        ).strip(),
+        "detail_scenario_code": row.get("expected_detail_scenario_code", "").strip(),
         "mcp_tool_name": row.get("expected_mcp_tool_name", "").strip(),
         "mcp_succeeded": expected_mcp_succeeded,
     }
@@ -671,9 +647,7 @@ def _parse_optional_bool(
         return True
     if normalized in {"false", "0", "no", "n"}:
         return False
-    raise EvaluationInputError(
-        f"{row_number}행 {column}은 true 또는 false여야 합니다."
-    )
+    raise EvaluationInputError(f"{row_number}행 {column}은 true 또는 false여야 합니다.")
 
 
 def _actual_values(actual: MasterResult) -> dict[str, str]:
@@ -681,9 +655,7 @@ def _actual_values(actual: MasterResult) -> dict[str, str]:
     mcp = actual.mcp
     return {
         "actual_status": actual.status,
-        "actual_classification_type": (
-            actual.classification.classification_type.value
-        ),
+        "actual_classification_type": (actual.classification.classification_type.value),
         "actual_agent_code": actual.classification.agent_code or "",
         "actual_refined_query": actual.classification.refined_query,
         "actual_subagent_agent_code": subagent.agent_code if subagent else "",
@@ -696,9 +668,7 @@ def _actual_values(actual: MasterResult) -> dict[str, str]:
         ),
         "actual_mcp_backend": mcp.backend if mcp else "",
         "actual_mcp_tool_name": mcp.tool_name if mcp else "",
-        "actual_mcp_succeeded": (
-            _bool_text(mcp.succeeded) if mcp else ""
-        ),
+        "actual_mcp_succeeded": (_bool_text(mcp.succeeded) if mcp else ""),
         # 개인정보가 포함될 수 있는 MCP 결과 본문은 저장하지 않는다.
         "actual_mcp_result_present": (
             _bool_text(mcp.result is not None) if mcp else ""
@@ -728,11 +698,15 @@ def _failure_reason(
             continue
         expected_value = expected[expected_name]
         # 선택 기대값은 입력했을 때만 판정한다.
-        if expected_name in {
-            "scenario_code",
-            "detail_scenario_code",
-            "mcp_tool_name",
-        } and not expected_value:
+        if (
+            expected_name
+            in {
+                "scenario_code",
+                "detail_scenario_code",
+                "mcp_tool_name",
+            }
+            and not expected_value
+        ):
             continue
         actual_value = actual[actual_name]
         if expected_value != actual_value:
@@ -747,8 +721,7 @@ def _failure_reason(
         expected_text = _bool_text(expected_mcp)
         if expected_text != actual_mcp:
             reasons.append(
-                "mcp_succeeded 불일치"
-                f"(expected={expected_text}, actual={actual_mcp})"
+                f"mcp_succeeded 불일치(expected={expected_text}, actual={actual_mcp})"
             )
     return "; ".join(reasons)
 

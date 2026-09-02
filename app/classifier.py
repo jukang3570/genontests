@@ -1,6 +1,7 @@
 """LangChain을 통해 GenOS LLM의 1차 의도분류를 호출하는 모듈."""
 
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -23,7 +24,7 @@ class IntentClassifier(Protocol):
     async def classify(
         self,
         message: str,
-        history: list[dict[str, str]],
+        history: list[dict[str, Any]],
         frontend_agent_code: str | None = None,
     ) -> IntentClassification: ...
 
@@ -69,7 +70,7 @@ class GenOSIntentClassifier:
             model=settings.genos_model,
             api_key=settings.genos_bearer_token,
             temperature=prompt.temperature,
-            max_retries=settings.llm_max_retries,
+            **settings.llm_client_options,
         )
 
         # strict JSON Schema를 적용해 LLM 응답을 Pydantic 모델로 직접 받는다.
@@ -99,15 +100,13 @@ class GenOSIntentClassifier:
     async def classify(
         self,
         message: str,
-        history: list[dict[str, str]],
+        history: list[dict[str, Any]],
         frontend_agent_code: str | None = None,
     ) -> IntentClassification:
         """선택 에이전트·동일 범위 이력·현재 질문을 LLM에 전달한다."""
 
         # Redis가 반환한 role/content 딕셔너리를 대화 순서대로 문자열화한다.
-        history_text = "\n".join(
-            f"{item['role']}: {item['content']}" for item in history
-        )
+        history_text = "\n".join(_history_item_for_prompt(item) for item in history)
         logger.info(
             "======== LLM 전달 준비 | 단계=마스터1차의도분류 | "
             "코드위치=app/classifier.py:GenOSIntentClassifier.classify | "
@@ -157,9 +156,7 @@ class GenOSIntentClassifier:
         except Exception as exc:
             log_failure_diagnostic(
                 stage="마스터 1차 의도분류 LLM 호출",
-                code_location=(
-                    "app/classifier.py:GenOSIntentClassifier.classify"
-                ),
+                code_location=("app/classifier.py:GenOSIntentClassifier.classify"),
                 exc=exc,
                 likely_cause=(
                     "GenOS LLM 연결·인증·모델 설정 오류, 응답 시간 초과, 또는 "
@@ -196,8 +193,7 @@ class GenOSIntentClassifier:
             structured.model_dump(mode="json"),
         )
         logger.info(
-            "======== 1차 의도분류 결과 | 분류유형=%s | 에이전트코드=%s | "
-            "보정질문=%s",
+            "======== 1차 의도분류 결과 | 분류유형=%s | 에이전트코드=%s | 보정질문=%s",
             result.classification_type.value,
             result.agent_code,
             result.refined_query,
@@ -213,3 +209,30 @@ def create_classifier(
     """운영 환경에서 사용할 실제 GenOS 의도분류기를 생성한다."""
 
     return GenOSIntentClassifier(settings, prompt)
+
+
+def _history_item_for_prompt(item: dict[str, Any]) -> str:
+    """본문과 화면에 노출됐던 추천질문을 마스터 LLM 이력으로 직렬화한다."""
+
+    role = str(item.get("role", "unknown"))
+    content = str(item.get("content", ""))
+    rendered = f"{role}: {content}"
+    if role.casefold() != "assistant":
+        return rendered
+
+    metadata = item.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return rendered
+    raw_questions = metadata.get("recommendedQuestions")
+    if not isinstance(raw_questions, list):
+        return rendered
+    questions = [
+        str(raw_question["question"]).strip()
+        for raw_question in raw_questions
+        if isinstance(raw_question, Mapping)
+        and isinstance(raw_question.get("question"), str)
+        and str(raw_question["question"]).strip()
+    ]
+    if questions:
+        rendered += "\nassistant가 함께 제시한 추천질문: " + " | ".join(questions)
+    return rendered

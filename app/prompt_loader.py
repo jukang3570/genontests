@@ -27,9 +27,7 @@ class PromptBundleLoader:
         # prompts/intent-classification 디렉터리를 기본으로 사용한다.
         self._root = (
             root
-            or Path(__file__).resolve().parents[1]
-            / "prompts"
-            / "intent-classification"
+            or Path(__file__).resolve().parents[1] / "prompts" / "intent-classification"
         )
 
     @timed("프롬프트 파일 결합")
@@ -56,8 +54,7 @@ class PromptBundleLoader:
             version_dir / manifest["router"]["agents_prompt"],
         ]
         paths.extend(
-            version_dir / "agents" / f"{code}.md"
-            for code in manifest["agent_code"]
+            version_dir / "agents" / f"{code}.md" for code in manifest["agent_code"]
         )
 
         # 향후 manifest에 전용 필드가 생기기 전에 추가된 Markdown도 누락되지
@@ -85,19 +82,13 @@ class PromptBundleLoader:
                 parts.append(f"<!-- prompt: {relative} -->\n{content}")
 
         if not parts:
-            raise ValueError(
-                f"{version} 버전에 내용이 있는 프롬프트가 없습니다."
-            )
+            raise ValueError(f"{version} 버전에 내용이 있는 프롬프트가 없습니다.")
 
         bundle = PromptBundle(
             version=version,
             system_prompt="\n\n---\n\n".join(parts),
-            temperature=float(
-                manifest.get("model", {}).get("temperature", 0)
-            ),
-            agent_codes=tuple(
-                code.upper() for code in manifest["agent_code"]
-            ),
+            temperature=float(manifest.get("model", {}).get("temperature", 0)),
+            agent_codes=tuple(code.upper() for code in manifest["agent_code"]),
             files=tuple(relative_files),
         )
         logger.info(

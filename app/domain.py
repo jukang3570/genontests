@@ -62,9 +62,7 @@ def create_structured_output_model(
         model_config = ConfigDict(extra="forbid")
 
         refined_query: str = Field(
-            description=(
-                "대화 문맥과 질문의 오타를 반영해 보정한 최종 사용자 질문"
-            )
+            description=("대화 문맥과 질문의 오타를 반영해 보정한 최종 사용자 질문")
         )
         classification_type: ClassificationType = Field(
             description=(
@@ -74,9 +72,7 @@ def create_structured_output_model(
             )
         )
         agent_code: agent_code_enum | None = Field(
-            description=(
-                "AGENT 분류이면 선택한 에이전트 코드, 예외 분류이면 null"
-            )
+            description=("AGENT 분류이면 선택한 에이전트 코드, 예외 분류이면 null")
         )
 
         @model_validator(mode="after")
@@ -87,13 +83,9 @@ def create_structured_output_model(
                 raise ValueError("refined_query는 비어 있을 수 없습니다.")
             if self.classification_type == ClassificationType.AGENT:
                 if self.agent_code is None:
-                    raise ValueError(
-                        "AGENT 분류에는 agent_code가 필요합니다."
-                    )
+                    raise ValueError("AGENT 분류에는 agent_code가 필요합니다.")
             elif self.agent_code is not None:
-                raise ValueError(
-                    "예외 분류의 agent_code는 null이어야 합니다."
-                )
+                raise ValueError("예외 분류의 agent_code는 null이어야 합니다.")
             return self
 
     # 동적 클래스여도 공급자에게 전달되는 스키마 제목은 항상 동일하게 유지한다.

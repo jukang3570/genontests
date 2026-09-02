@@ -1,7 +1,7 @@
 """MCP 결과와 예외 분류를 최종 사용자 답변 스트림으로 변환한다."""
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -15,8 +15,13 @@ from app.answerability import (
     create_answerability_service,
 )
 from app.config import Settings
+from app.error_responses import build_safe_error_answer
 from app.graph import MasterResult
-from app.mcp.models import MCP_SAFE_ERROR_MESSAGE, McpExecutionResult
+from app.mcp.models import (
+    MCP_NO_DATA_MESSAGE,
+    MCP_SAFE_ERROR_MESSAGE,
+    McpExecutionResult,
+)
 from app.observability import log_failure_diagnostic, logger, timed
 from app.rag_policies import (
     filter_documents_by_retrieval_score,
@@ -70,9 +75,7 @@ class AnswerPromptLoader:
     def __init__(self, root: Path | None = None) -> None:
         self._root = (
             root
-            or Path(__file__).resolve().parents[1]
-            / "prompts"
-            / "answer-generation"
+            or Path(__file__).resolve().parents[1] / "prompts" / "answer-generation"
         )
 
     @timed("최종 답변 프롬프트 로딩")
@@ -138,13 +141,11 @@ class DefaultAnswerService:
         self._model = settings.genos_model
         self._endpoint = settings.genos_openai_base_url
         self._max_retries = settings.llm_max_retries
+        self._include_error_details = settings.response_error_details_enabled
         self._reranker = reranker or create_reranking_service(settings)
-        self._answerability = (
-            answerability_service
-            or create_answerability_service(
-                settings,
-                prompt.answerability_system_prompt,
-            )
+        self._answerability = answerability_service or create_answerability_service(
+            settings,
+            prompt.answerability_system_prompt,
         )
         # 테스트에서는 토큰이 없으므로 네트워크를 호출하지 않는 RAG 대체 답변을
         # 사용한다. 운영에서는 마스터와 같은 GenOS OpenAI 호환 엔드포인트다.
@@ -155,7 +156,7 @@ class DefaultAnswerService:
                 model=settings.genos_model,
                 api_key=settings.genos_bearer_token,
                 temperature=prompt.temperature,
-                max_retries=settings.llm_max_retries,
+                **settings.llm_client_options,
             )
         logger.info(
             "======== 최종 답변 서비스 준비 | LLM사용=%s | 모델=%s | "
@@ -166,8 +167,18 @@ class DefaultAnswerService:
             self._max_retries,
         )
 
+    @timed("최종 답변 구성 준비")
     async def prepare(self, result: MasterResult) -> PreparedAnswer:
         """세부 시나리오별 정책에 따라 고정 데이터와 RAG 답변을 조합한다."""
+
+        if result.direct_answer is not None:
+            logger.info("======== 그래프 직접 안내 답변 선택")
+            return PreparedAnswer(
+                "clarification",
+                [],
+                [],
+                _stream_fixed(result.direct_answer),
+            )
 
         if result.status == "EXCEPTION":
             code = result.classification.classification_type.value
@@ -181,6 +192,73 @@ class DefaultAnswerService:
         agent_code = (result.classification.agent_code or "").upper()
         mcp_results = result.mcp_results or []
         matches = result.subagent.matches if result.subagent else []
+        # 목업·외부 workflow가 이전 MasterResult 형태를 주입해도 RAG 답변이
+        # AttributeError로 중단되지 않게 한다. 새 그래프 결과에는 정식 필드가
+        # 존재하며, 이전 객체는 대화 이력 없음으로 안전하게 처리한다.
+        chat_history = _result_chat_history(result)
+
+        # 복수 시나리오 중 하나라도 MCP 실행/파싱이 실패하면 이미 성공한 결과의
+        # 테이블까지 모두 버리고 단일 안전 오류 답변만 만든다. 일부 성공 결과와
+        # 오류를 섞으면 사용자가 전체 조회를 정상 결과로 오해할 수 있다.
+        failed_mcp = next(
+            (
+                item
+                for item in mcp_results
+                if item.outcome == "ERROR" or not item.succeeded or item.error
+            ),
+            None,
+        )
+        if failed_mcp is not None:
+            answer = build_safe_error_answer(
+                MCP_SAFE_ERROR_MESSAGE,
+                error_code=failed_mcp.business_code or "MCP_EXECUTION_ERROR",
+                error_detail=failed_mcp.error or "MCP 도구 실행이 실패했습니다.",
+                include_details=self._include_error_details,
+            )
+            logger.error(
+                "======== MCP 오류 고정답변 선택\n"
+                "에이전트=%s\nMCP도구=%s\n업무코드=%s\n"
+                "내부오류=%s\n테이블전달=아니오\n출처문서전달=아니오",
+                agent_code,
+                failed_mcp.tool_name,
+                failed_mcp.business_code,
+                failed_mcp.error,
+            )
+            return PreparedAnswer("error", [], [], _stream_fixed(answer))
+
+        # 고정답변 세부 시나리오는 MCP 결과를 소비하지 않는다. 나머지 시나리오
+        # 수와 terminal MCP 결과 수가 다르면 정상 무데이터가 아니라 실행 흐름
+        # 누락이므로 빈 표를 만들지 않고 처리 오류로 간주한다.
+        if matches:
+            expected_mcp_count = sum(
+                1
+                for match in matches
+                if get_subagent_fixed_response(
+                    agent_code,
+                    match.detail_scenario_code.upper(),
+                )
+                is None
+            )
+            if len(mcp_results) != expected_mcp_count:
+                detail = (
+                    f"예상 MCP 결과 {expected_mcp_count}건, "
+                    f"실제 {len(mcp_results)}건"
+                )
+                answer = build_safe_error_answer(
+                    MCP_SAFE_ERROR_MESSAGE,
+                    error_code="MCP_RESULT_COUNT_MISMATCH",
+                    error_detail=detail,
+                    include_details=self._include_error_details,
+                )
+                logger.error(
+                    "======== MCP 결과 개수 불일치\n"
+                    "에이전트=%s\n예상결과=%d\n실제결과=%d\n"
+                    "테이블전달=아니오\n출처문서전달=아니오",
+                    agent_code,
+                    expected_mcp_count,
+                    len(mcp_results),
+                )
+                return PreparedAnswer("error", [], [], _stream_fixed(answer))
 
         # 과거 단일 응답이나 서브에이전트가 없는 테스트 결과도 기존 방식으로
         # 처리한다. 실제 등록 시나리오는 아래 세부 시나리오 정책 경로를 탄다.
@@ -223,13 +301,29 @@ class DefaultAnswerService:
                     detail_code,
                 )
                 used_modes.add("fixed_data")
-                answer_parts.append(
-                    "조회 결과가 없습니다. 잠시 후 다시 시도해 주세요."
-                )
+                answer_parts.append("조회 결과가 없습니다. 잠시 후 다시 시도해 주세요.")
                 continue
 
             mcp = mcp_results[mcp_cursor]
             mcp_cursor += 1
+            is_no_data, call_count, no_data_count = _mcp_no_data_status(mcp)
+            if is_no_data:
+                used_modes.add("fixed_data")
+                answer_parts.append(MCP_NO_DATA_MESSAGE)
+                logger.info(
+                    "======== MCP 무데이터 고정답변 선택\n"
+                    "순번=%d\n에이전트=%s\n세부시나리오=%s\n"
+                    "MCP도구=%s\n업무코드=%s\n전체호출수=%s\n"
+                    "무데이터호출수=%s\n테이블전달=아니오",
+                    index + 1,
+                    agent_code,
+                    detail_code,
+                    mcp.tool_name,
+                    mcp.business_code,
+                    call_count,
+                    no_data_count,
+                )
+                continue
             if mcp.user_message:
                 used_modes.add("fixed_data")
                 answer_parts.append(mcp.user_message)
@@ -247,31 +341,36 @@ class DefaultAnswerService:
                 )
                 continue
             policy = get_rag_policy(agent_code, detail_code)
-            # 복수 문서 시나리오에서는 전체 질문보다 각 match가 추출한 검색문이
-            # 해당 문서 묶음과의 관련성·답변 가능성을 더 정확히 나타낸다.
+            # 검색 본문은 항상 마스터 보정 질문을 사용하고, 서브에이전트가 각
+            # 세부 시나리오별로 추출한 keywords를 별도로 결합한다.
+            master_refined_query = result.classification.refined_query.strip()
             scenario_query = str(
-                match.parameters.get("search_query")
-                or result.classification.refined_query
+                match.parameters.get("rag_query") or master_refined_query
             ).strip()
+            scenario_keywords = _rag_keywords(match.parameters.get("keywords"))
+            reranking_query = _reranking_query(
+                scenario_query,
+                scenario_keywords,
+            )
             logger.info(
                 "======== 세부 시나리오 답변 방식 결정\n"
                 "순번=%d\n에이전트=%s\n세부시나리오=%s\n답변방식=%s\n"
-                "MCP도구=%s\n시나리오검색문=%s",
+                "MCP도구=%s\n세부검색질문=%s\n키워드=%s\n대화이력개수=%d",
                 index + 1,
                 agent_code,
                 detail_code,
                 "rag" if policy else "fixed_data",
                 mcp.tool_name,
                 scenario_query,
+                scenario_keywords,
+                len(chat_history),
             )
 
             if policy is None:
                 used_modes.add("fixed_data")
                 if mcp.succeeded:
                     fixed_success_count += 1
-                answer_parts.append(
-                    _build_fixed_data_answer(result, mcp_results=[mcp])
-                )
+                answer_parts.append(_build_fixed_data_answer(result, mcp_results=[mcp]))
                 renderables.extend(
                     _collect_message_renderables(result, mcp_results=[mcp])
                 )
@@ -298,7 +397,7 @@ class DefaultAnswerService:
 
             if policy.reranking_enabled:
                 documents = await self._reranker.rerank(
-                    query=scenario_query,
+                    query=reranking_query,
                     documents=documents,
                     top_n=policy.reranking_top_n,
                     score_threshold=policy.reranking_score_threshold,
@@ -323,7 +422,7 @@ class DefaultAnswerService:
 
             if policy.answerability_check_enabled:
                 answerable = await self._answerability.is_answerable(
-                    query=scenario_query,
+                    query=reranking_query,
                     documents=documents,
                 )
                 if not answerable:
@@ -340,7 +439,10 @@ class DefaultAnswerService:
             source_documents.extend(documents)
             answer_parts.append(
                 self._stream_rag(
+                    master_query=master_refined_query,
                     query=scenario_query,
+                    keywords=scenario_keywords,
+                    chat_history=chat_history,
                     documents=documents,
                 )
             )
@@ -392,7 +494,10 @@ class DefaultAnswerService:
                 documents,
                 [],
                 self._stream_rag(
+                    master_query=result.classification.refined_query,
                     query=result.classification.refined_query,
+                    keywords=[],
+                    chat_history=_result_chat_history(result),
                     documents=documents,
                 ),
             )
@@ -412,15 +517,27 @@ class DefaultAnswerService:
     async def _stream_rag(
         self,
         *,
+        master_query: str,
         query: str,
+        keywords: list[str],
+        chat_history: list[dict[str, Any]],
         documents: list[dict[str, Any]],
     ) -> AsyncIterator[str]:
         """MCP dict를 문서로 넣어 GenOS 답변 토큰을 스트리밍한다."""
 
         document_text = json.dumps(documents, ensure_ascii=False, default=str)
+        keywords_text = json.dumps(keywords, ensure_ascii=False)
+        history_text = json.dumps(
+            chat_history,
+            ensure_ascii=False,
+            default=str,
+        )
         human_prompt = (
-            f"사용자 질문:\n{query}\n\n"
-            f"참고 문서:\n{document_text}"
+            f"마스터 보정 사용자 질문:\n{master_query}\n\n"
+            f"현재 세부 시나리오 검색 질문:\n{query}\n\n"
+            f"세부 시나리오 검색 키워드:\n{keywords_text}\n\n"
+            f"같은 에이전트의 이전 대화 이력:\n{history_text}\n\n"
+            f"하이브리드 검색 및 Reranking 통과 문서:\n{document_text}"
         )
         if self._llm is None:
             fallback = (
@@ -435,12 +552,16 @@ class DefaultAnswerService:
             "======== RAG LLM 스트리밍 호출 시작 | "
             "코드위치=app/answers.py:DefaultAnswerService._stream_rag | "
             "엔드포인트=%s | 모델=%s | 문서개수=%d | 문서JSON길이=%d | "
-            "질문=%s | 자동재시도=%d회",
+            "질문=%s | 키워드=%s | 대화이력개수=%d | 대화이력JSON길이=%d | "
+            "자동재시도=%d회",
             self._endpoint,
             self._model,
             len(documents),
             len(document_text),
             query,
+            keywords,
+            len(chat_history),
+            len(history_text),
             self._max_retries,
         )
         try:
@@ -480,8 +601,7 @@ class DefaultAnswerService:
             )
             raise
         logger.info(
-            "======== RAG LLM 스트리밍 호출 완료 | 문서개수=%d | "
-            "자동재시도=%d회",
+            "======== RAG LLM 스트리밍 호출 완료 | 문서개수=%d | 자동재시도=%d회",
             len(documents),
             self._max_retries,
         )
@@ -492,6 +612,88 @@ async def _stream_fixed(text: str) -> AsyncIterator[str]:
 
     for chunk in split_text(text):
         yield chunk
+
+
+def _rag_keywords(value: Any) -> list[str]:
+    """서브에이전트 구조화 출력의 keywords를 안전한 문자열 배열로 만든다."""
+
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        keyword = str(item).strip()
+        if not keyword or keyword in seen:
+            continue
+        seen.add(keyword)
+        normalized.append(keyword)
+    return normalized[:10]
+
+
+def _result_chat_history(result: Any) -> list[dict[str, Any]]:
+    """신·구 MasterResult에서 안전한 RAG 대화 이력만 반환한다."""
+
+    value = getattr(result, "chat_history", None)
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _mcp_no_data_status(
+    mcp: McpExecutionResult,
+) -> tuple[bool, int | None, int | None]:
+    """개별 또는 다중 MCP 결과가 최종 무데이터인지 판별한다.
+
+    정상 경로에서는 집계기가 outcome=NO_DATA와 business_code=1001을 만든다.
+    output 계층에서도 fan-out/function-many 원장의 호출 수와 1001 건수를 다시
+    세어, 집계 메타데이터가 누락되거나 outcome이 잘못 전달된 경우 빈 표가
+    사용자에게 노출되지 않게 방어한다.
+    """
+
+    if mcp.outcome == "NO_DATA" or mcp.business_code == "1001":
+        return True, None, None
+
+    result = mcp.result
+    if not isinstance(result, Mapping):
+        return False, None, None
+
+    # 현재 두 집계 구현은 각각 execution 또는 fanout 아래에 동일한 카운트를
+    # 보존한다. 숫자가 문자열로 직렬화되어도 int 변환으로 비교할 수 있다.
+    for summary_key in ("execution", "fanout"):
+        summary = result.get(summary_key)
+        if not isinstance(summary, Mapping):
+            continue
+        try:
+            call_count = int(summary.get("callCount", 0))
+            no_data_count = int(summary.get("noDataCount", 0))
+        except (TypeError, ValueError):
+            continue
+        if call_count > 0 and no_data_count == call_count:
+            return True, call_count, no_data_count
+
+    # 집계 summary 자체가 없거나 신뢰할 수 없으면 보존된 개별 batch를 직접 센다.
+    batches = result.get("batches")
+    if not isinstance(batches, Sequence) or isinstance(batches, (str, bytes)):
+        return False, None, None
+    valid_batches = [item for item in batches if isinstance(item, Mapping)]
+    if not valid_batches:
+        return False, None, None
+    no_data_count = sum(
+        1
+        for item in valid_batches
+        if item.get("outcome") == "NO_DATA"
+        or str(item.get("businessCode") or "") == "1001"
+    )
+    call_count = len(valid_batches)
+    return no_data_count == call_count, call_count, no_data_count
+
+
+def _reranking_query(query: str, keywords: list[str]) -> str:
+    """Reranker에 보정 질문과 세부 시나리오 keywords를 함께 전달한다."""
+
+    if not keywords:
+        return query
+    return f"{query}\n검색 키워드: {', '.join(keywords)}"
 
 
 async def _stream_answer_parts(
@@ -527,6 +729,11 @@ def _build_fixed_data_answer(
     succeeded_count = 0
     failed_count = 0
     for index, mcp in enumerate(selected_results, start=1):
+        is_no_data, _, _ = _mcp_no_data_status(mcp)
+        if is_no_data:
+            rows.append(MCP_NO_DATA_MESSAGE)
+            succeeded_count += 1
+            continue
         if mcp.user_message:
             rows.append(mcp.user_message)
             # NO_DATA는 MCP 호출 자체는 정상 종료된 업무 결과다. 운영 로그에서
@@ -665,9 +872,7 @@ def _build_databricks_source_documents(
                 row.get("document_id"),
             )
             continue
-        document_id = str(
-            row.get("document_id") or f"{request_id}:document:{index}"
-        )
+        document_id = str(row.get("document_id") or f"{request_id}:document:{index}")
         title = str(row.get("title") or "자격기준 조회 문서")
         documents.append(
             {

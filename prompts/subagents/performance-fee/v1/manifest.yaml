@@ -1,5 +1,5 @@
-version: "1.2.0"
-released_at: "2026-08-10"
+version: "1.5.0"
+released_at: "2026-08-20"
 agent_code: "PERFORMANCE_FEE"
 
 prompt_files:
@@ -37,6 +37,9 @@ parameter_definitions:
   reference_year:
     description: "기준년도. 반드시 YYYY 형식이며 질문에 없으면 null"
     pattern: "^[0-9]{4}$"
+  fax_number:
+    description: "원천징수 내역을 받을 팩스번호. 질문에 없으면 null"
+    pattern: "^[0-9-]{9,13}$"
 
 scenarios:
   - code: "PERFORMANCE_SUMMARY"
@@ -46,6 +49,12 @@ scenarios:
       - code: "PERFORMANCE_SUMMARY_TOTAL"
         name: "실적 종합 조회"
         description: "로그인한 카드 모집인 본인의 환산점수와 실적건수를 종합 조회"
+        parameters:
+          - "closing_year_month"
+          - "reference_date"
+        recommended_questions:
+          - "이번 달 실적 항목별 내역도 보여줘"
+          - "지난달 실적과 비교해줘"
 
   - code: "COMPOSITE_CONVERSION"
     name: "복합환산조회"
@@ -54,9 +63,23 @@ scenarios:
       - code: "COMPOSITE_CONVERSION_SCORE"
         name: "복합판매 구분코드별 환산점수 및 실적 건수 조회"
         description: "복합판매 구분코드별 환산점수와 실적 건수를 조회"
+        parameters:
+          - "closing_year_month"
+          - "reference_date"
+        recommended_questions:
+          - "복합환산에서 제외된 내역도 알려줘"
+          - "지난달 복합환산 점수와 비교해줘"
       - code: "COMPOSITE_CONVERSION_EXCLUDED"
         name: "환산 미반영 내역 조회"
         description: "자동이체 미연결, 자동차 연계, 탈회, 삼성전자 매출 등 실적 제외 내역 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "복합판매 구분별 환산점수도 보여줘"
+          - "지난달 환산 미반영 내역과 비교해줘"
+        # MCP 호출 방식은 YAML이 아니라
+        # app/mcp/scenarios/performance_fee.py의
+        # composite_conversion_excluded()에서 전부 제어한다.
 
   - code: "UNREGISTERED_MEMBER"
     name: "미등록 회원 조회"
@@ -65,9 +88,19 @@ scenarios:
       - code: "UNREGISTERED_MEMBER_SUMMARY"
         name: "미등록 회원 현황 조회"
         description: "카드발급, 업체인계, 카드반송, 타인수령 등 유형별 건수 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "타인수령과 업체인계 상세 내역을 보여줘"
+          - "지난달 미등록 회원 현황과 비교해줘"
       - code: "UNREGISTERED_MEMBER_HANDOFF_DETAIL"
         name: "타인수령 및 업체인계 상세 조회"
         description: "미등록 회원 유형 중 타인수령과 업체인계 상세 내역 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "미등록 회원 유형별 전체 건수를 보여줘"
+          - "지난달 타인수령과 업체인계 내역도 보여줘"
 
   - code: "DISPOSAL_FEE"
     name: "폐기 수수료 조회"
@@ -76,9 +109,19 @@ scenarios:
       - code: "DISPOSAL_FEE_SUMMARY"
         name: "폐기 환산 및 회입 수수료 조회"
         description: "카드 모집인의 폐기 환산 건수, 회입점수, 회입수수료 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "고객별 폐기 환산 상세 내역도 보여줘"
+          - "지난달 폐기 회입수수료와 비교해줘"
       - code: "DISPOSAL_FEE_CUSTOMER_DETAIL"
         name: "고객별 폐기 환산 상세 조회"
         description: "특정 고객의 폐기 환산 상세 내역과 폐기 사유 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "전체 폐기 환산 건수와 회입수수료를 보여줘"
+          - "지난달 고객별 폐기 내역도 보여줘"
 
   - code: "FEE_DETAILS"
     name: "수수료 내역 조회"
@@ -87,15 +130,51 @@ scenarios:
       - code: "FEE_ITEM_DETAILS"
         name: "항목별 수수료 조회"
         description: "카드 모집인 본인에게 실제 지급된 수당 개념 항목별 수수료 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "세금과 최종 실지급액도 알려줘"
+          - "최근 12개월 수수료 추이를 보여줘"
       - code: "FEE_TAX_NET_PAYMENT"
         name: "세금 및 실지급액 조회"
         description: "카드 모집인 본인의 항목별 세금·공제 내역과 최종 실지급액 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "항목별 수수료 내역도 보여줘"
+          - "최근 12개월 실지급액 추이를 보여줘"
       - code: "FEE_12_MONTH_TREND"
         name: "12개월 수수료 추이 조회"
         description: "카드 모집인 본인이 실제 지급받은 최근 12개월 수수료 내역 추이 조회"
+        parameters:
+          - "closing_year_month"
+        recommended_questions:
+          - "지난달 항목별 수수료를 보여줘"
+          - "지난달 세금과 실지급액을 알려줘"
       - code: "WITHHOLDING_TAX"
         name: "원천징수 내역 조회"
         description: "카드 모집인 본인의 기준년도 원천징수 내역 조회"
+        parameters:
+          - "reference_year"
+        recommended_questions:
+          - question: "팩스로 전송해드릴까요?"
+            affirmative_followup:
+              message: "원천징수 내역 팩스 전송을 승인했으니 팩스번호 입력을 진행해줘"
+              detail_scenario_code: "WITHHOLDING_TAX_FAX_SEND"
+          - "지난달 수수료 세금과 실지급액을 알려줘"
+          - "전년도 원천징수 내역도 보여줘"
+      - code: "WITHHOLDING_TAX_FAX_SEND"
+        name: "원천징수 내역 팩스 전송"
+        description: "원천징수 조회와 독립적으로 팩스번호를 입력받아 MCP 전송 도구를 실행"
+        parameters:
+          - "reference_year"
+          - "fax_number"
+        recommended_questions:
+          - "원천징수 내역을 다시 조회해줘"
+          - "다른 팩스번호로 다시 전송해줘"
+        # action code/message/inputs/validation과 MCP 실행 정책은 전부
+        # app/mcp/scenarios/performance_fee.py의
+        # _withholding_tax_fax_number_action(), withholding_tax_fax_send()에서 제어한다.
 
   - code: "INFORMATION_INQUIRY"
     name: "실적·수수료 비조회성 설명 문의"
@@ -104,3 +183,7 @@ scenarios:
       - code: "PERFORMANCE_FEE_INFORMATION_INQUIRY"
         name: "실적·수수료 비조회성 안내"
         description: "기간계 금액·건수·내역 조회가 아닌 실적·수수료 용어, 의미, 기준 또는 FAQ 문의"
+        parameters: []
+        recommended_questions:
+          - "이번 달 실적을 조회해줘"
+          - "지난달 항목별 수수료를 보여줘"

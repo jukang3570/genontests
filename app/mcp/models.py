@@ -7,10 +7,8 @@ from pydantic import BaseModel, ConfigDict
 
 # MCP 내부 오류 원문과 사용자에게 보여 줄 문구를 분리한다. 이 문구는
 # PERFORMANCE_FEE뿐 아니라 향후 모든 조회형·RAG MCP에서 공통으로 사용한다.
-MCP_NO_DATA_MESSAGE = "조회된 데이터가 없습니다."
-MCP_SAFE_ERROR_MESSAGE = (
-    "조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
-)
+MCP_NO_DATA_MESSAGE = "조회 결과가 없습니다."
+MCP_SAFE_ERROR_MESSAGE = "조회 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
 
 McpOutcome = Literal["SUCCESS", "NO_DATA", "ERROR"]
 
@@ -43,3 +41,28 @@ class McpExecutionResult(BaseModel):
     formatted_result: dict[str, Any] | None = None
     # 서버 로그와 로컬 추적을 위한 내부 오류다. 최종 답변에 직접 노출하지 않는다.
     error: str | None = None
+    # 한 세부 시나리오에서 MCP가 여러 번 순차 호출될 때의 추적 메타데이터다.
+    # mcp_results에는 시나리오별 terminal 결과만, graph state의
+    # mcp_workflow_results에는 아래 메타데이터를 가진 모든 step 결과를 보관한다.
+    workflow_step_code: str = "FINAL"
+    workflow_step_index: int = 0
+    workflow_step_count: int = 1
+    workflow_is_final: bool = True
+    # for_each 또는 mapped step은 같은 workflow step을 0~N회 호출한다. 개별
+    # 호출과 fan-in 합성 결과를 tester와 다음 step에서 구분하기 위한 값이다.
+    workflow_execution_mode: Literal[
+        "single",
+        "for_each",
+        "mapped",
+        "function",
+        "function_many",
+        "pagination",
+    ] = "single"
+    workflow_item_index: int | None = None
+    workflow_item_count: int | None = None
+    workflow_source_step_code: str | None = None
+    workflow_is_aggregate: bool = False
+    workflow_input_mapper_code: str | None = None
+    # YAML step DSL이 아니라 등록된 Python 시나리오 함수가 실행한 호출인지
+    # tester와 formatter에서 역추적할 수 있는 안정적인 registry code다.
+    workflow_handler_code: str | None = None

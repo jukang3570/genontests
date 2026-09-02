@@ -1,6 +1,7 @@
 """일반 Redis HITL 상태를 사용하는 마스터 에이전트 LangGraph 워크플로."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Literal, TypedDict
 
@@ -10,7 +11,7 @@ from app.classifier import IntentClassifier
 from app.csv_trace import EmptyTraceRecorder, TraceRecorder
 from app.domain import ClassificationType, IntentClassification
 from app.history import ChatHistoryStore
-from app.hitl import build_hitl_request, validate_ok_signal
+from app.hitl import build_hitl_request, validate_input_value, validate_ok_signal
 from app.hitl_store import (
     HitlStateNotFoundError,
     HitlStateStore,
@@ -18,10 +19,35 @@ from app.hitl_store import (
 )
 from app.mcp.client import EmptyMcpToolExecutor, McpToolExecutor
 from app.mcp.models import MCP_SAFE_ERROR_MESSAGE, McpExecutionResult
-from app.mcp.payloads import McpParameterInputRequired
+from app.mcp.exceptions import McpParameterInputRequired
+from app.mcp.request_builder import (
+    get_mcp_workflow_iteration_items,
+    get_mcp_workflow_step,
+    get_mcp_workflow_step_count,
+)
 from app.mcp.result_adapters import adapt_mcp_result
+from app.mcp.scenario_runtime import ScenarioMcpHandlerContext
+from app.mcp.scenarios.registry import (
+    get_scenario_handler_spec,
+    run_scenario_handler,
+)
+from app.mcp.workflow import aggregate_fanout_results
+from app.mcp.workflow_handlers import build_mapped_step_arguments
 from app.observability import log_failure_diagnostic, logger, timed
-from app.subagents.models import SubagentResult
+from app.recommended_questions import (
+    ambiguous_affirmative_recommendations,
+    resolve_affirmative_recommendation,
+)
+from app.scenario_actions import (
+    ScenarioActionRequired,
+    get_scenario_action,
+    redact_scenario_action_parameters,
+)
+from app.subagents.models import (
+    SubagentResult,
+    redact_interaction_parameters,
+    subagent_result_for_log,
+)
 from app.subagents.fixed_responses import get_subagent_fixed_response
 from app.subagents.router import EmptySubagentRouter, SubagentRouter
 
@@ -41,10 +67,25 @@ class MasterState(TypedDict, total=False):
     # 수 있으므로 Redis HITL 상태와 CSV에는 저장하지 않는다. HITL 재진입 때는
     # 재진입 HTTP 요청의 최신 컨텍스트를 다시 주입한다.
     request_context: dict[str, Any]
-    history: list[dict[str, str]]
+    history: list[dict[str, Any]]
+    # 최종 분류된 agent_code 범위에서 다시 조회한 RAG 답변용 과거 대화다.
+    # 현재 질문은 별도 refined_query로 전달하므로 이 배열에는 포함하지 않는다.
+    chat_history: list[dict[str, Any]]
+    # 추천질문 버튼 클릭 시 프론트가 되돌려주는 고유 ID다. 자연어 ``네``와
+    # 달리 실행 대상을 확정할 수 있으며 Redis에는 저장하지 않는다.
+    recommendation_id: str | None
+    # 직전 assistant 추천질문에 대한 단답형 동의를 서버가 확정적으로 해석한 값.
+    recommendation_followup: dict[str, str]
+    # 여러 실행 제안에 대한 대상 없는 ``네``처럼 LLM에 추측시키면 안 되는
+    # 경우 API 답변과 다시 표시할 버튼을 그래프 결과에 직접 전달한다.
+    direct_answer: str
+    recommended_questions_override: list[dict[str, Any]]
     classification: dict[str, Any]
     subagent: dict[str, Any] | None
     mcp: dict[str, Any] | None
+    # 모든 세부 시나리오의 중간/최종 MCP step 결과. 개발 추적과 다음 step의
+    # argument 매핑에 사용하며 최종 답변 정렬에는 직접 사용하지 않는다.
+    mcp_workflow_results: list[dict[str, Any]]
     mcp_results: list[dict[str, Any]]
     # 복수 MCP 중 추가 입력이 필요한 순번이다. 재진입 시 완료된 이전 도구를
     # 다시 호출하지 않고 이 순번부터 이어서 실행한다.
@@ -58,6 +99,35 @@ class MasterState(TypedDict, total=False):
     approved: bool
 
 
+def _request_project_code(state: Mapping[str, Any]) -> str | None:
+    """현재 요청의 서비스 별칭을 Redis namespace 전달값으로 반환한다."""
+
+    request_context = state.get("request_context")
+    if not isinstance(request_context, Mapping):
+        return None
+    return str(request_context.get("endpoint", "")).strip() or None
+
+
+def _intent_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """분류에 필요한 본문과 추천질문만 남기고 화면용 metadata는 제외한다."""
+
+    normalized: list[dict[str, Any]] = []
+    for item in history:
+        entry: dict[str, Any] = {
+            "role": str(item.get("role", "")),
+            "content": str(item.get("content", "")),
+        }
+        metadata = item.get("metadata")
+        if isinstance(metadata, Mapping):
+            recommended_questions = metadata.get("recommendedQuestions")
+            if isinstance(recommended_questions, list):
+                entry["metadata"] = {
+                    "recommendedQuestions": recommended_questions,
+                }
+        normalized.append(entry)
+    return normalized
+
+
 @dataclass(frozen=True)
 class MasterResult:
     """FastAPI 응답으로 변환하기 전의 프레임워크 독립적인 그래프 결과."""
@@ -68,7 +138,11 @@ class MasterResult:
     interrupt: dict | None = None
     subagent: SubagentResult | None = None
     mcp: McpExecutionResult | None = None
+    mcp_workflow_results: list[McpExecutionResult] | None = None
     mcp_results: list[McpExecutionResult] | None = None
+    direct_answer: str | None = None
+    recommended_questions_override: list[dict[str, Any]] | None = None
+    chat_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 class MasterIntentGraph:
@@ -124,7 +198,10 @@ class MasterIntentGraph:
             self._run_subagent,
             # retry_policy=None,
         )
-        builder.add_node("call_mcp", self._call_mcp,)# retry_policy=None)
+        builder.add_node(
+            "call_mcp",
+            self._call_mcp,
+        )  # retry_policy=None)
         builder.add_node("clear_hitl_state", self._clear_hitl_state)
         builder.add_node("finish_exception", self._finish_exception)
 
@@ -135,12 +212,8 @@ class MasterIntentGraph:
             self._route_entry,
             {
                 "load_history": "load_history",
-                "validate_agent_code_mismatch": (
-                    "validate_agent_code_mismatch"
-                ),
-                "validate_mcp_parameter_input": (
-                    "validate_mcp_parameter_input"
-                ),
+                "validate_agent_code_mismatch": ("validate_agent_code_mismatch"),
+                "validate_mcp_parameter_input": ("validate_mcp_parameter_input"),
             },
         )
         builder.add_edge("load_history", "classify_intent")
@@ -236,23 +309,19 @@ class MasterIntentGraph:
             hitl_type = state.get("hitl_type")
             if hitl_type == "AGENT_CODE_MISMATCH":
                 logger.info(
-                    "======== 진입 라우팅 | HITL유형=%s | "
-                    "에이전트 코드 변경 검증 단계",
+                    "======== 진입 라우팅 | HITL유형=%s | 에이전트 코드 변경 검증 단계",
                     hitl_type,
                 )
                 return "validate_agent_code_mismatch"
 
             if hitl_type == "MCP_PARAMETER_REQUIRED":
                 logger.info(
-                    "======== 진입 라우팅 | HITL유형=%s | "
-                    "MCP 필수 파라미터 검증 단계",
+                    "======== 진입 라우팅 | HITL유형=%s | MCP 필수 파라미터 검증 단계",
                     hitl_type,
                 )
                 return "validate_mcp_parameter_input"
 
-            raise ValueError(
-                f"지원하지 않는 Redis HITL 유형입니다: {hitl_type}"
-            )
+            raise ValueError(f"지원하지 않는 Redis HITL 유형입니다: {hitl_type}")
         raise ValueError(f"지원하지 않는 entry_stage입니다: {entry_stage}")
 
     @timed("Redis 대화이력 조회")
@@ -265,13 +334,17 @@ class MasterIntentGraph:
             # 멀티턴 문맥은 유지해야 한다. 가장 최근에 사용한 에이전트 하나를
             # 선택하여 그 범위의 이력만 읽으므로 서로 다른 에이전트 이력은
             # 섞이지 않는다.
-            recent_agent_code, history = (
-                await self._history_store.get_recent_for_session(
-                    state["employee_id"],
-                    state["session_id"],
-                    self._history_limit,
-                )
+            (
+                recent_agent_code,
+                history,
+            ) = await self._history_store.get_recent_for_session(
+                state["employee_id"],
+                state["session_id"],
+                self._history_limit,
+                include_metadata=True,
+                project_code=_request_project_code(state),
             )
+            history = _intent_history(history)
             logger.info(
                 "======== Redis 이력 조회 완료 | 프론트 에이전트 미선택 | "
                 "최근에이전트=%s | 조회개수=%d",
@@ -295,7 +368,10 @@ class MasterIntentGraph:
             state["session_id"],
             frontend_code,
             self._history_limit,
+            include_metadata=True,
+            project_code=_request_project_code(state),
         )
+        history = _intent_history(history)
         logger.info(
             "======== Redis 이력 조회 완료 | 사원번호=%s | "
             "session_id=%s | 에이전트=%s | 조회개수=%d",
@@ -317,6 +393,75 @@ class MasterIntentGraph:
             len(state["history"]),
         )
         started_at = perf_counter()
+        followup = resolve_affirmative_recommendation(
+            state["message"],
+            state["history"],
+            state.get("recommendation_id"),
+        )
+        if followup is not None:
+            # 추천질문은 서버 manifest가 지정한 대상이므로 ``네``를 다시 LLM에
+            # 추측시키지 않는다. 완전한 후속 문장과 대상 agent를 바로 사용한다.
+            result = IntentClassification(
+                refined_query=followup["message"],
+                classification_type=ClassificationType.AGENT,
+                agent_code=followup["agent_code"],
+            )
+            update: MasterState = {
+                "classification": result.model_dump(mode="json"),
+                "recommendation_followup": followup,
+            }
+            logger.info(
+                "======== 추천질문 긍정 후속 자동연결 | 에이전트=%s | "
+                "대상세부시나리오=%s | 마스터LLM호출=생략",
+                followup["agent_code"],
+                followup["detail_scenario_code"],
+            )
+            self._trace_recorder.record(
+                "추천질문긍정후속연결",
+                {**state, **update},
+                elapsed_seconds=perf_counter() - started_at,
+            )
+            return update
+        ambiguous_options = ambiguous_affirmative_recommendations(
+            state["message"],
+            state["history"],
+            state.get("recommendation_id"),
+        )
+        if ambiguous_options:
+            # 일반 LLM에 ``네``의 대상을 추측시키면 잘못된 MCP가 실행될 수 있다.
+            # 실행 없이 종료하되 직전 실행 제안만 다시 보내 명시적 클릭을 받는다.
+            result = IntentClassification(
+                refined_query=state["message"],
+                classification_type=ClassificationType.EMPTY_QUERY,
+                agent_code=None,
+            )
+            direct_answer = (
+                (
+                    "선택한 추천질문을 현재 대화에서 확인하지 못했습니다. "
+                    "아래 항목을 다시 선택해 주세요."
+                )
+                if state.get("recommendation_id") is not None
+                else (
+                    "진행할 수 있는 제안이 여러 개입니다. 아래 항목 중 하나를 "
+                    "선택하거나 원하는 업무를 직접 입력해 주세요."
+                )
+            )
+            update = {
+                "classification": result.model_dump(mode="json"),
+                "direct_answer": direct_answer,
+                "recommended_questions_override": ambiguous_options,
+            }
+            logger.info(
+                "======== 추천질문 긍정 대상 재확인 | 후보개수=%d | "
+                "마스터LLM호출=생략 | MCP호출=생략",
+                len(ambiguous_options),
+            )
+            self._trace_recorder.record(
+                "추천질문긍정대상재확인",
+                {**state, **update},
+                elapsed_seconds=perf_counter() - started_at,
+            )
+            return update
         try:
             result = await self._classifier.classify(
                 state["message"],
@@ -328,9 +473,7 @@ class MasterIntentGraph:
                 stage="LangGraph 마스터 의도분류 노드",
                 code_location="app/graph.py:MasterIntentGraph._classify_intent",
                 exc=exc,
-                likely_cause=(
-                    "마스터 분류기 내부 LLM 호출 또는 구조화 결과 변환 실패"
-                ),
+                likely_cause=("마스터 분류기 내부 LLM 호출 또는 구조화 결과 변환 실패"),
                 corrective_action=(
                     "바로 앞의 '마스터 1차 의도분류 LLM 호출' 실패 진단과 "
                     "app/classifier.py를 확인하세요."
@@ -373,9 +516,7 @@ class MasterIntentGraph:
     ) -> Literal["verify_selection", "finish_exception"]:
         """정상 업무는 코드 비교로, 예외 유형은 예외 종료로 보낸다."""
 
-        classification = IntentClassification.model_validate(
-            state["classification"]
-        )
+        classification = IntentClassification.model_validate(state["classification"])
         if classification.classification_type == ClassificationType.AGENT:
             logger.info("======== 라우팅 결정 | 에이전트 코드 비교 단계")
             return "verify_selection"
@@ -405,9 +546,7 @@ class MasterIntentGraph:
     def _verify_selection(self, state: MasterState) -> MasterState:
         """프론트 코드가 있으면 비교하고, 미선택이면 분류 결과를 바로 통과시킨다."""
 
-        classification = IntentClassification.model_validate(
-            state["classification"]
-        )
+        classification = IntentClassification.model_validate(state["classification"])
         frontend_code = state.get("frontend_agent_code")
         if frontend_code is None:
             logger.info(
@@ -522,33 +661,56 @@ class MasterIntentGraph:
     @staticmethod
     @timed("MCP 필수 파라미터 사용자 입력 검증")
     def _validate_mcp_parameter_input(state: MasterState) -> MasterState:
-        """action으로 받은 값을 대기 중인 MCP match 파라미터에 반영한다."""
+        """Python action으로 받은 값을 대기 중인 match 파라미터에 반영한다."""
 
         interrupt = state.get("interrupt")
         if not isinstance(interrupt, dict):
             raise ValueError("복원된 MCP 파라미터 입력 요청이 없습니다.")
         if state.get("hitl_type") != "MCP_PARAMETER_REQUIRED":
             raise ValueError(
-                "MCP 파라미터 검증 노드에 잘못 진입했습니다: "
-                f"{state.get('hitl_type')}"
+                f"MCP 파라미터 검증 노드에 잘못 진입했습니다: {state.get('hitl_type')}"
             )
 
         context = dict(interrupt.get("context", {}))
         input_code = str(context.get("input_code", ""))
         parameter_name = str(context.get("parameter_name", ""))
         match_index = int(context.get("match_index", -1))
-        human_input = state.get("human_input")
-        value = (
-            human_input.get(input_code)
-            if isinstance(human_input, dict)
-            else None
-        )
-        normalized_value = str(value).strip() if value is not None else ""
+        scenario_action_code = str(context.get("scenario_action_code", ""))
+        scenario_action = None
+        normalized_values: dict[str, str] = {}
+        if scenario_action_code:
+            scenario_action = get_scenario_action(
+                str(context.get("agent_code", "")),
+                str(context.get("detail_scenario_code", "")),
+                scenario_action_code,
+            )
+            if scenario_action is None:
+                errors = {
+                    "action": (
+                        "서버에 등록된 action 함수를 찾을 수 없습니다. "
+                        "새 질문으로 다시 시작해 주세요."
+                    )
+                }
+            else:
+                normalized_values, errors = scenario_action.validate_submission(
+                    state.get("human_input")
+                )
+        elif not input_code or not parameter_name:
+            errors = {input_code or "input": "입력 설정을 확인해 주세요."}
+        else:
+            normalized_value, errors = validate_input_value(
+                state.get("human_input"),
+                input_code=input_code,
+                expected_value=context.get("expected_value"),
+                pattern=context.get("pattern"),
+                min_length=context.get("min_length"),
+                max_length=context.get("max_length"),
+                allowed_values=context.get("allowed_values"),
+                validation_message=context.get("validation_message"),
+            )
+            normalized_values = {parameter_name: normalized_value}
 
-        if not input_code or not parameter_name or not normalized_value:
-            errors = {
-                input_code or "input": "필수 입력값을 입력해 주세요."
-            }
+        if errors:
             logger.info(
                 "======== MCP 파라미터 입력 검증 실패 | 입력코드=%s | "
                 "파라미터=%s | 오류=%s",
@@ -558,8 +720,24 @@ class MasterIntentGraph:
             )
             refreshed = build_hitl_request(
                 hitl_type="MCP_PARAMETER_REQUIRED",
-                message=str(interrupt.get("message", "필수값을 입력해 주세요.")),
-                fields=list(interrupt.get("fields", [])),
+                action_code=(
+                    scenario_action.action_code
+                    if scenario_action is not None
+                    else str(
+                        interrupt.get("action_code")
+                        or interrupt.get("type")
+                        or "MCP_PARAMETER_REQUIRED"
+                    )
+                ),
+                # MCP 결과를 반영해 동적으로 만든 안내문도 재검증 응답에서 유지한다.
+                message=str(
+                    interrupt.get("message", "필수값을 입력해 주세요.")
+                ),
+                fields=(
+                    scenario_action.frontend_fields()
+                    if scenario_action is not None
+                    else list(interrupt.get("fields", []))
+                ),
                 context=context,
                 errors=errors,
             )
@@ -571,25 +749,54 @@ class MasterIntentGraph:
 
         subagent = SubagentResult.model_validate(state["subagent"])
         if match_index < 0 or match_index >= len(subagent.matches):
-            raise ValueError(
-                f"MCP 재개 match_index가 올바르지 않습니다: {match_index}"
-            )
+            raise ValueError(f"MCP 재개 match_index가 올바르지 않습니다: {match_index}")
 
         match = subagent.matches[match_index]
         updated_parameters = {
             **match.parameters,
-            parameter_name: normalized_value,
+            **normalized_values,
         }
         match.parameters = updated_parameters
         if match_index == 0:
             subagent.parameters = dict(updated_parameters)
 
+        resumed_workflow_results = list(
+            state.get("mcp_workflow_results", [])
+        )
+        if scenario_action is not None and scenario_action.invalidate_step_codes:
+            handler_spec = get_scenario_handler_spec(
+                subagent.agent_code,
+                match.detail_scenario_code,
+            )
+            handler_code = handler_spec.code if handler_spec is not None else None
+            invalidated_steps = set(scenario_action.invalidate_step_codes)
+            resumed_workflow_results = [
+                item
+                for item in resumed_workflow_results
+                if not (
+                    isinstance(item, Mapping)
+                    and item.get("workflow_handler_code") == handler_code
+                    and item.get("workflow_step_code") in invalidated_steps
+                )
+            ]
+            logger.info(
+                "======== Python action MCP 체크포인트 무효화 | action=%s | "
+                "handler=%s | step=%s",
+                scenario_action.action_code,
+                handler_code,
+                sorted(invalidated_steps),
+            )
+
         logger.info(
-            "======== MCP 파라미터 입력 검증 완료 | 입력코드=%s | "
+            "======== Python action 입력 검증 완료 | action=%s | "
             "파라미터=%s | 값=%s | 재개순번=%d",
-            input_code,
-            parameter_name,
-            normalized_value,
+            scenario_action_code or "LEGACY_MCP_PARAMETER_REQUIRED",
+            sorted(normalized_values),
+            redact_scenario_action_parameters(
+                subagent.agent_code,
+                match.detail_scenario_code,
+                normalized_values,
+            ),
             match_index,
         )
         return {
@@ -598,6 +805,7 @@ class MasterIntentGraph:
             "interrupt": None,
             "subagent": subagent.model_dump(mode="json"),
             "mcp_start_index": match_index,
+            "mcp_workflow_results": resumed_workflow_results,
         }
 
     @staticmethod
@@ -650,6 +858,7 @@ class MasterIntentGraph:
             stored_state.update(
                 {
                     "subagent": state["subagent"],
+                    "mcp_workflow_results": state.get("mcp_workflow_results", []),
                     "mcp_results": state.get("mcp_results", []),
                     "mcp": state.get("mcp"),
                     "mcp_start_index": state.get("mcp_start_index", 0),
@@ -662,6 +871,7 @@ class MasterIntentGraph:
             hitl_type=str(interrupt["type"]),
             graph_state=stored_state,
             interrupt=interrupt,
+            project_code=_request_project_code(state),
         )
         logger.info(
             "======== HITL 대기 상태 저장 완료 | thread_id=%s | 유형=%s",
@@ -680,11 +890,29 @@ class MasterIntentGraph:
     ) -> MasterState:
         """보정된 질문을 최종 분류된 에이전트의 대화 이력에 저장한다."""
 
-        classification = IntentClassification.model_validate(
-            state["classification"]
-        )
+        classification = IntentClassification.model_validate(state["classification"])
         assert classification.agent_code is not None
 
+        # 최초 의도분류 이력은 프론트가 선택한 agent 기준일 수 있다. 최종 RAG
+        # 답변에는 다른 서브에이전트 이력이 섞이지 않도록 분류된 agent_code로
+        # 현재 질문 저장 전에 다시 읽는다. Redis 저장 형식은 변경하지 않는다.
+        chat_history = await self._history_store.get_recent(
+            state["employee_id"],
+            state["session_id"],
+            classification.agent_code,
+            self._history_limit,
+            include_metadata=False,
+            project_code=_request_project_code(state),
+        )
+        chat_history = _intent_history(chat_history)
+        logger.info(
+            "======== RAG 답변용 대화이력 준비\n"
+            "사원번호=%s\nsession_id=%s\n에이전트=%s\n과거대화개수=%d",
+            state["employee_id"],
+            state["session_id"],
+            classification.agent_code,
+            len(chat_history),
+        )
         logger.info(
             "======== Redis 대화 저장 요청 | 사원번호=%s | "
             "session_id=%s | 에이전트=%s | 역할=user | 보정질문=%s",
@@ -700,11 +928,15 @@ class MasterIntentGraph:
             role="user",
             content=classification.refined_query,
             message_id=f"{state['message_id']}:user",
+            project_code=_request_project_code(state),
         )
         logger.info("======== Redis 대화 저장 단계 완료")
         # Redis 저장은 부수효과지만 LangGraph 상태 노드는 최소 한 개의 상태
         # 키를 반환해야 한다. 기존 message_id를 유지하는 쓰기를 명시한다.
-        return {"message_id": state["message_id"]}
+        return {
+            "message_id": state["message_id"],
+            "chat_history": chat_history,
+        }
 
     @timed("대화 저장 이후 라우팅")
     def _after_message_persist(
@@ -713,12 +945,9 @@ class MasterIntentGraph:
     ) -> Literal["run_subagent", "clear_hitl_state", "end"]:
         """등록된 에이전트는 서브에이전트로, 나머지는 종료로 보낸다."""
 
-        classification = IntentClassification.model_validate(
-            state["classification"]
-        )
-        if (
-            classification.agent_code is not None
-            and self._subagent_router.supports(classification.agent_code)
+        classification = IntentClassification.model_validate(state["classification"])
+        if classification.agent_code is not None and self._subagent_router.supports(
+            classification.agent_code
         ):
             logger.info(
                 "======== 서브에이전트 라우팅 | 에이전트=%s | 실행=예",
@@ -734,9 +963,7 @@ class MasterIntentGraph:
     async def _run_subagent(self, state: MasterState) -> MasterState:
         """마스터가 선택한 에이전트의 시나리오와 파라미터를 분류한다."""
 
-        classification = IntentClassification.model_validate(
-            state["classification"]
-        )
+        classification = IntentClassification.model_validate(state["classification"])
         assert classification.agent_code is not None
         logger.info(
             "======== 서브에이전트 실행 시작 | 에이전트=%s | 질문=%s",
@@ -745,10 +972,31 @@ class MasterIntentGraph:
         )
         started_at = perf_counter()
         try:
-            result = await self._subagent_router.classify(
-                agent_code=classification.agent_code,
-                query=classification.refined_query,
+            followup = state.get("recommendation_followup")
+            classify_for_detail = getattr(
+                self._subagent_router,
+                "classify_for_detail",
+                None,
             )
+            if followup is not None and callable(classify_for_detail):
+                result = await classify_for_detail(
+                    agent_code=classification.agent_code,
+                    query=classification.refined_query,
+                    detail_scenario_code=followup["detail_scenario_code"],
+                )
+                if result is None:
+                    # 이전 답변 뒤 활성 manifest 버전이 바뀌어 대상 detail이
+                    # 사라진 경우에도 빈 결과로 끝내지 않고 완전한 후속 문장을
+                    # 일반 서브 분류기에 전달한다.
+                    result = await self._subagent_router.classify(
+                        agent_code=classification.agent_code,
+                        query=classification.refined_query,
+                    )
+            else:
+                result = await self._subagent_router.classify(
+                    agent_code=classification.agent_code,
+                    query=classification.refined_query,
+                )
         except Exception as exc:
             log_failure_diagnostic(
                 stage="LangGraph 서브에이전트 시나리오 분류 노드",
@@ -785,11 +1033,10 @@ class MasterIntentGraph:
             return {"subagent": None}
         update = {"subagent": result.model_dump(mode="json")}
         logger.info(
-            "======== 서브에이전트 실행 완료 | 에이전트=%s | "
-            "매칭개수=%d | 결과=%s",
+            "======== 서브에이전트 실행 완료 | 에이전트=%s | 매칭개수=%d | 결과=%s",
             result.agent_code,
             len(result.matches),
-            result.model_dump(mode="json"),
+            subagent_result_for_log(result),
         )
         traced_state = {**state, **update}
         elapsed = perf_counter() - started_at
@@ -835,28 +1082,58 @@ class MasterIntentGraph:
             return MasterIntentGraph._completion_route(state)
         return MasterIntentGraph._completion_route(state)
 
+    def _record_mcp_workflow_result(
+        self,
+        *,
+        state: MasterState,
+        workflow_results: list[McpExecutionResult],
+        stage: str,
+    ) -> None:
+        """각 단일/fan-out/fan-in 결과 직후 개발 추적 state를 기록한다."""
+
+        self._trace_recorder.record(
+            stage,
+            {
+                **state,
+                "mcp_workflow_results": [
+                    item.model_dump(mode="json") for item in workflow_results
+                ],
+            },
+        )
+
     @timed("MCP 도구 실행")
     async def _call_mcp(self, state: MasterState) -> MasterState:
-        """세부 시나리오별 Python payload로 MCP 도구를 호출한다."""
+        """세부 시나리오별 Python handler로 MCP 도구를 호출한다."""
 
         subagent_data = state.get("subagent")
         if subagent_data is None:
             return {"mcp": None}
         subagent = SubagentResult.model_validate(subagent_data)
+        classification_data = state.get("classification")
+        refined_query = (
+            IntentClassification.model_validate(classification_data).refined_query
+            if classification_data is not None
+            else str(state.get("message", "")).strip()
+        )
         started_at = perf_counter()
         results = [
             McpExecutionResult.model_validate(item)
             for item in state.get("mcp_results", [])
+        ]
+        workflow_results = [
+            McpExecutionResult.model_validate(item)
+            for item in state.get("mcp_workflow_results", [])
         ]
         start_index = int(state.get("mcp_start_index", 0))
         if start_index < 0 or start_index > len(subagent.matches):
             raise ValueError(f"MCP 시작 순번이 올바르지 않습니다: {start_index}")
         logger.info(
             "======== MCP 실행 범위 | 전체매칭=%d | 시작순번=%d | "
-            "기완료결과=%d",
+            "기완료최종결과=%d | 기완료workflow단계=%d",
             len(subagent.matches),
             start_index,
             len(results),
+            len(workflow_results),
         )
         try:
             for match_index in range(start_index, len(subagent.matches)):
@@ -876,8 +1153,8 @@ class MasterIntentGraph:
                         fixed_response.message,
                     )
                     continue
-                # 각 매칭을 독립된 단일 결과로 변환해 코드에 등록된 MCP
-                # payload를 차례대로 실행한다.
+                # 각 매칭을 독립된 결과로 변환한다. 현재 detail은 등록 Python
+                # handler가 실행하고, 명시적 legacy workflow만 선언 순서를 따른다.
                 single = SubagentResult(
                     agent_code=subagent.agent_code,
                     prompt_version=subagent.prompt_version,
@@ -886,49 +1163,506 @@ class MasterIntentGraph:
                     detail_scenario_code=match.detail_scenario_code,
                     detail_scenario_name=match.detail_scenario_name,
                     parameters=match.parameters,
+                    interaction=match.interaction,
+                    mcp_workflow=match.mcp_workflow,
                     matches=[match],
+                )
+                registered_handler = get_scenario_handler_spec(
+                    single.agent_code,
+                    single.detail_scenario_code,
+                )
+                # 명시적인 legacy mcp_workflow가 있으면 기존 선언형 테스트/이전
+                # 배포와의 호환을 우선한다. 새 manifest는 workflow를 선언하지
+                # 않으므로 아래 등록 Python 함수가 기본 실행 경로가 된다.
+                function_handler = (
+                    registered_handler
+                    if single.mcp_workflow is None
+                    else None
+                )
+                workflow_step_count = (
+                    0
+                    if function_handler is not None
+                    else get_mcp_workflow_step_count(single)
                 )
                 logger.info(
                     "======== MCP 개별 실행 시작 | 순번=%d | 시나리오=%s | "
-                    "세부시나리오=%s | 파라미터=%s",
+                    "세부시나리오=%s | 실행방식=%s | workflow단계수=%d | "
+                    "handler=%s | 파라미터=%s",
                     match_index,
                     match.scenario_code,
                     match.detail_scenario_code,
-                    match.parameters,
+                    "Python함수" if function_handler is not None else "legacy",
+                    workflow_step_count,
+                    function_handler.code if function_handler is not None else None,
+                    redact_scenario_action_parameters(
+                        subagent.agent_code,
+                        match.detail_scenario_code,
+                        redact_interaction_parameters(
+                            match.parameters,
+                            match.interaction,
+                        ),
+                    ),
                 )
+                scenario_workflow_results: list[McpExecutionResult] = []
+                result: McpExecutionResult | None = None
+                handler_context: ScenarioMcpHandlerContext | None = None
                 try:
-                    result = await self._mcp_executor.execute(
-                        subagent=single,
-                        employee_id=state["employee_id"],
-                        session_id=state["session_id"],
-                        thread_id=state["thread_id"],
-                        request_context=state.get("request_context", {}),
-                    )
+                    if function_handler is not None:
+                        self._trace_recorder.record(
+                            "MCP함수핸들러시작",
+                            {
+                                **state,
+                                "mcp_handler_trace": {
+                                    "handlerCode": function_handler.code,
+                                    "agentCode": single.agent_code,
+                                    "detailScenarioCode": (
+                                        single.detail_scenario_code
+                                    ),
+                                    "codeLocation": (
+                                        f"{function_handler.handler.__module__}:"
+                                        f"{function_handler.handler.__name__}"
+                                    ),
+                                },
+                            },
+                        )
+
+                        def record_function_trace(
+                            stage: str,
+                            payload: dict[str, Any],
+                            partial_results: Any,
+                        ) -> None:
+                            self._trace_recorder.record(
+                                stage,
+                                {
+                                    **state,
+                                    "mcp_handler_trace": payload,
+                                    "mcp_workflow_results": [
+                                        item.model_dump(mode="json")
+                                        for item in (
+                                            *workflow_results,
+                                            *partial_results,
+                                        )
+                                    ],
+                                },
+                            )
+
+                        restored_handler_results = [
+                            item
+                            for item in workflow_results
+                            if item.workflow_handler_code == function_handler.code
+                        ]
+                        handler_context = ScenarioMcpHandlerContext(
+                            handler_code=function_handler.code,
+                            executor=self._mcp_executor,
+                            subagent=single,
+                            employee_id=state["employee_id"],
+                            session_id=state["session_id"],
+                            thread_id=state["thread_id"],
+                            refined_query=refined_query,
+                            request_context=state.get("request_context", {}),
+                            initial_results=restored_handler_results,
+                            trace_callback=record_function_trace,
+                        )
+                        handler_outcome = await run_scenario_handler(
+                            spec=function_handler,
+                            context=handler_context,
+                        )
+                        scenario_workflow_results.extend(handler_outcome.results)
+                        workflow_results = [
+                            item
+                            for item in workflow_results
+                            if item.workflow_handler_code != function_handler.code
+                        ]
+                        workflow_results.extend(handler_outcome.results)
+                        result = handler_outcome.terminal
+                        logger.info(
+                            "======== MCP Python handler 완료 | handler=%s | "
+                            "세부시나리오=%s | step수=%d | 원장결과수=%d | "
+                            "terminal=%s | outcome=%s",
+                            function_handler.code,
+                            single.detail_scenario_code,
+                            max(
+                                (
+                                    item.workflow_step_count
+                                    for item in handler_outcome.results
+                                ),
+                                default=0,
+                            ),
+                            len(handler_outcome.results),
+                            result.workflow_step_code,
+                            result.outcome,
+                        )
+                    for workflow_step_index in range(workflow_step_count):
+                        workflow_step = get_mcp_workflow_step(
+                            single,
+                            workflow_step_index,
+                        )
+                        try:
+                            mapped_arguments = (
+                                build_mapped_step_arguments(
+                                    subagent=single,
+                                    step=workflow_step,
+                                    step_index=workflow_step_index,
+                                    step_count=workflow_step_count,
+                                    previous_results=scenario_workflow_results,
+                                    employee_id=state["employee_id"],
+                                    session_id=state["session_id"],
+                                    thread_id=state["thread_id"],
+                                    request_context=state.get("request_context", {}),
+                                )
+                                if workflow_step is not None
+                                else None
+                            )
+                        except Exception as exc:
+                            assert workflow_step is not None
+                            mapper_failure = McpExecutionResult(
+                                backend="mapper",
+                                tool_name=workflow_step.tool.name,
+                                request_id=(
+                                    f"{state['thread_id']}:"
+                                    f"{match.detail_scenario_code}:"
+                                    f"{workflow_step.code}:MAPPER"
+                                ),
+                                arguments={},
+                                succeeded=False,
+                                outcome="ERROR",
+                                user_message=MCP_SAFE_ERROR_MESSAGE,
+                                error=str(exc),
+                                workflow_step_code=workflow_step.code,
+                                workflow_step_index=workflow_step_index,
+                                workflow_step_count=workflow_step_count,
+                                workflow_is_final=(
+                                    workflow_step_index == workflow_step_count - 1
+                                ),
+                                workflow_execution_mode="mapped",
+                                workflow_input_mapper_code=(
+                                    workflow_step.input_mapper
+                                ),
+                            )
+                            scenario_workflow_results.append(mapper_failure)
+                            workflow_results.append(mapper_failure)
+                            self._record_mcp_workflow_result(
+                                state=state,
+                                workflow_results=workflow_results,
+                                stage="MCP워크플로입력매핑오류",
+                            )
+                            log_failure_diagnostic(
+                                stage="MCP workflow input mapper",
+                                code_location=(
+                                    "app/mcp/workflow_handlers.py:"
+                                    "build_mapped_step_arguments"
+                                ),
+                                exc=exc,
+                                likely_cause=(
+                                    "mapper code 미등록, 이전 step 결과 구조 불일치 "
+                                    "또는 반환 arguments 배열 계약 위반"
+                                ),
+                                corrective_action=(
+                                    "manifest input_mapper와 workflow_handlers.py의 "
+                                    "등록 함수 및 tester raw result를 확인하세요."
+                                ),
+                                retry_count=0,
+                                context={
+                                    "detail_scenario_code": (
+                                        match.detail_scenario_code
+                                    ),
+                                    "step_code": workflow_step.code,
+                                    "input_mapper": workflow_step.input_mapper,
+                                },
+                            )
+                            result = mapper_failure
+                            break
+                        is_mapped_step = mapped_arguments is not None
+                        iteration_items = (
+                            mapped_arguments
+                            if is_mapped_step
+                            else get_mcp_workflow_iteration_items(
+                                subagent=single,
+                                step_index=workflow_step_index,
+                                previous_results=scenario_workflow_results,
+                            )
+                        )
+                        if is_mapped_step:
+                            self._trace_recorder.record(
+                                "MCP워크플로입력매핑완료",
+                                {
+                                    **state,
+                                    "mcp_workflow_mapping": {
+                                        "stepCode": workflow_step.code,
+                                        "inputMapper": workflow_step.input_mapper,
+                                        "invocationCount": len(mapped_arguments),
+                                        "argumentKeys": [
+                                            sorted(arguments)
+                                            for arguments in mapped_arguments
+                                        ],
+                                    },
+                                },
+                            )
+                            logger.info(
+                                "======== MCP workflow input mapper 완료 | "
+                                "세부시나리오=%s | step=%s | mapper=%s | "
+                                "생성호출수=%d | argumentKeys=%s",
+                                match.detail_scenario_code,
+                                workflow_step.code,
+                                workflow_step.input_mapper,
+                                len(mapped_arguments),
+                                [sorted(arguments) for arguments in mapped_arguments],
+                            )
+                        if iteration_items is None:
+                            step_result = await self._mcp_executor.execute(
+                                subagent=single,
+                                employee_id=state["employee_id"],
+                                session_id=state["session_id"],
+                                thread_id=state["thread_id"],
+                                request_context=state.get("request_context", {}),
+                                workflow_step_index=workflow_step_index,
+                                previous_results=scenario_workflow_results,
+                            )
+                            if step_result is None:
+                                break
+                            scenario_workflow_results.append(step_result)
+                            workflow_results.append(step_result)
+                            self._record_mcp_workflow_result(
+                                state=state,
+                                workflow_results=workflow_results,
+                                stage="MCP워크플로단계완료",
+                            )
+                            logger.info(
+                                "======== MCP workflow 단계 완료 | "
+                                "세부시나리오=%s | 단계=%d/%d | step=%s | "
+                                "도구=%s | outcome=%s | 다음단계호출=%s",
+                                match.detail_scenario_code,
+                                workflow_step_index + 1,
+                                workflow_step_count,
+                                step_result.workflow_step_code,
+                                step_result.tool_name,
+                                step_result.outcome,
+                                (
+                                    "예"
+                                    if step_result.succeeded
+                                    and step_result.outcome == "SUCCESS"
+                                    and step_result.backend != "disabled"
+                                    else "아니오"
+                                ),
+                            )
+                            result = step_result
+                            if (
+                                not step_result.succeeded
+                                or step_result.outcome != "SUCCESS"
+                                or step_result.backend == "disabled"
+                            ):
+                                break
+                            continue
+
+                        if workflow_step is None:
+                            raise ValueError(
+                                "기본 FINAL step에는 for_each를 사용할 수 없습니다."
+                            )
+                        fanout_results: list[McpExecutionResult] = []
+                        fail_fast_result: McpExecutionResult | None = None
+                        logger.info(
+                            "======== MCP workflow 다중 호출 시작 | "
+                            "세부시나리오=%s | step=%s | mode=%s | 항목수=%d | "
+                            "mapper=%s | 오류정책=%s",
+                            match.detail_scenario_code,
+                            workflow_step.code,
+                            workflow_step.execution.mode,
+                            len(iteration_items),
+                            workflow_step.input_mapper,
+                            workflow_step.execution.error_policy,
+                        )
+                        for item_index, current_item in enumerate(iteration_items):
+                            child_execute_kwargs: dict[str, Any] = {
+                                "subagent": single,
+                                "employee_id": state["employee_id"],
+                                "session_id": state["session_id"],
+                                "thread_id": state["thread_id"],
+                                "request_context": state.get("request_context", {}),
+                                "workflow_step_index": workflow_step_index,
+                                "previous_results": scenario_workflow_results,
+                                "workflow_item_index": item_index,
+                                "workflow_item_count": len(iteration_items),
+                            }
+                            if is_mapped_step:
+                                child_execute_kwargs["argument_overrides"] = current_item
+                            else:
+                                # 기존 third-party/fake executor가 새 keyword를 받지
+                                # 않아도 for_each 호환성이 유지되게 분리한다.
+                                child_execute_kwargs["current_item"] = current_item
+                            child_result = await self._mcp_executor.execute(
+                                **child_execute_kwargs
+                            )
+                            if child_result is None:
+                                break
+                            fanout_results.append(child_result)
+                            scenario_workflow_results.append(child_result)
+                            workflow_results.append(child_result)
+                            self._record_mcp_workflow_result(
+                                state=state,
+                                workflow_results=workflow_results,
+                                stage=(
+                                    "MCP워크플로매퍼호출완료"
+                                    if is_mapped_step
+                                    else "MCP워크플로반복호출완료"
+                                ),
+                            )
+                            logger.info(
+                                "======== MCP workflow fan-out 호출 완료 | "
+                                "세부시나리오=%s | step=%s | 항목=%d/%d | "
+                                "도구=%s | outcome=%s",
+                                match.detail_scenario_code,
+                                workflow_step.code,
+                                item_index + 1,
+                                len(iteration_items),
+                                child_result.tool_name,
+                                child_result.outcome,
+                            )
+                            child_failed = (
+                                not child_result.succeeded
+                                or child_result.outcome != "SUCCESS"
+                                or child_result.backend == "disabled"
+                            )
+                            if child_result.backend == "disabled":
+                                fail_fast_result = child_result
+                                break
+                            if (
+                                child_failed
+                                and workflow_step.execution.error_policy
+                                == "fail_fast"
+                            ):
+                                fail_fast_result = child_result
+                                break
+
+                        if fail_fast_result is not None and (
+                            workflow_step.execution.error_policy == "fail_fast"
+                            or fail_fast_result.backend == "disabled"
+                        ):
+                            result = fail_fast_result
+                            break
+
+                        aggregate_request_id = (
+                            f"{fanout_results[0].request_id}:AGGREGATE"
+                            if fanout_results
+                            else (
+                                f"{state['thread_id']}:"
+                                f"{match.detail_scenario_code}:"
+                                f"{workflow_step.code}:AGGREGATE"
+                            )
+                        )
+                        aggregate_result = aggregate_fanout_results(
+                            step=workflow_step,
+                            workflow_step_index=workflow_step_index,
+                            workflow_step_count=workflow_step_count,
+                            item_count=len(iteration_items),
+                            results=fanout_results,
+                            aggregate_request_id=aggregate_request_id,
+                        )
+                        scenario_workflow_results.append(aggregate_result)
+                        workflow_results.append(aggregate_result)
+                        self._record_mcp_workflow_result(
+                            state=state,
+                            workflow_results=workflow_results,
+                            stage="MCP워크플로결과집계완료",
+                        )
+                        logger.info(
+                            "======== MCP workflow 다중 결과 집계 완료 | "
+                            "세부시나리오=%s | step=%s | mode=%s | 호출수=%d | "
+                            "병합데이터수=%d | outcome=%s",
+                            match.detail_scenario_code,
+                            workflow_step.code,
+                            workflow_step.execution.mode,
+                            len(fanout_results),
+                            len((aggregate_result.result or {}).get("data", [])),
+                            aggregate_result.outcome,
+                        )
+                        result = aggregate_result
+                        if (
+                            not aggregate_result.succeeded
+                            or aggregate_result.outcome != "SUCCESS"
+                            or aggregate_result.backend == "disabled"
+                        ):
+                            break
                 except McpParameterInputRequired as required:
-                    interrupt = build_hitl_request(
-                        hitl_type="MCP_PARAMETER_REQUIRED",
-                        message=required.message,
-                        fields=[
+                    if function_handler is not None and handler_context is not None:
+                        # MCP 뒤 action이 발생해도 그 직전까지의 결과를 Redis에
+                        # 체크포인트로 남긴다. 재진입 시 동일 step은 재호출하지 않는다.
+                        workflow_results = [
+                            item
+                            for item in workflow_results
+                            if item.workflow_handler_code != function_handler.code
+                        ]
+                        workflow_results.extend(handler_context.results)
+                    if isinstance(required, ScenarioActionRequired):
+                        action_code = required.definition.action_code
+                        action_fields = required.definition.frontend_fields()
+                        initial_errors = required.errors
+                        scenario_action_code = required.definition.action_code
+                    else:
+                        action_code = "MCP_PARAMETER_REQUIRED"
+                        action_fields = [
                             {
                                 "name": required.input_code,
                                 "label": required.label,
                                 "type": required.input_type,
                                 "required": True,
+                                "expected_value": required.expected_value,
+                                "pattern": required.pattern,
+                                "min_length": required.min_length,
+                                "max_length": required.max_length,
+                                "allowed_values": required.allowed_values,
+                                "sensitive": required.sensitive,
                             }
-                        ],
+                        ]
+                        initial_errors = (
+                            {required.input_code: required.initial_error}
+                            if required.initial_error
+                            else None
+                        )
+                        scenario_action_code = None
+                    interrupt = build_hitl_request(
+                        hitl_type="MCP_PARAMETER_REQUIRED",
+                        action_code=action_code,
+                        message=required.message,
+                        fields=action_fields,
                         context={
                             "agent_code": subagent.agent_code,
                             "scenario_code": match.scenario_code,
-                            "detail_scenario_code": (
-                                match.detail_scenario_code
-                            ),
+                            "detail_scenario_code": (match.detail_scenario_code),
                             "match_index": match_index,
                             "input_code": required.input_code,
                             "parameter_name": required.parameter_name,
+                            "expected_value": required.expected_value,
+                            "pattern": required.pattern,
+                            "min_length": required.min_length,
+                            "max_length": required.max_length,
+                            "allowed_values": required.allowed_values,
+                            "validation_message": (required.validation_message),
+                            "sensitive": required.sensitive,
+                            "scenario_action_code": scenario_action_code,
+                            "action_source": (
+                                "python_scenario_handler"
+                                if scenario_action_code
+                                else "legacy_interaction"
+                            ),
+                            "handler_code": (
+                                function_handler.code
+                                if function_handler is not None
+                                else None
+                            ),
+                            "code_location": (
+                                f"{function_handler.handler.__module__}:"
+                                f"{function_handler.handler.__name__}"
+                                if function_handler is not None
+                                else "app/mcp/request_builder.py"
+                            ),
                         },
+                        errors=initial_errors,
                     )
                     serialized_results = [
                         item.model_dump(mode="json") for item in results
+                    ]
+                    serialized_workflow_results = [
+                        item.model_dump(mode="json") for item in workflow_results
                     ]
                     update: MasterState = {
                         "status": "INPUT_REQUIRED",
@@ -936,11 +1670,8 @@ class MasterIntentGraph:
                         "interrupt": interrupt,
                         "subagent": subagent.model_dump(mode="json"),
                         "mcp_start_index": match_index,
-                        "mcp": (
-                            serialized_results[0]
-                            if serialized_results
-                            else None
-                        ),
+                        "mcp": (serialized_results[0] if serialized_results else None),
+                        "mcp_workflow_results": serialized_workflow_results,
                         "mcp_results": serialized_results,
                     }
                     logger.info(
@@ -970,6 +1701,7 @@ class MasterIntentGraph:
                             session_id=state["session_id"],
                             thread_id=state["thread_id"],
                             request_context=state.get("request_context", {}),
+                            workflow_results=scenario_workflow_results,
                         )
                     except Exception as exc:
                         # MCP 호출은 성공했더라도 결과 컬럼·data 형식 또는 포맷
@@ -983,19 +1715,17 @@ class MasterIntentGraph:
                             ),
                             exc=exc,
                             likely_cause=(
-                                "MCP structuredContent.data 구조, objId 컬럼 또는 "
-                                "시나리오 답변 포맷 함수 불일치"
+                                "MCP 원본 결과 구조 또는 세부 시나리오 output handler의 "
+                                "전처리·답변·renderable 반환 계약 불일치"
                             ),
                             corrective_action=(
-                                "app/mcp/result_adapters.py의 해당 "
-                                "SCENARIO_QUERY_CONFIGS와 formatter를 확인하세요."
+                                "app/mcp/scenarios/registry.py의 output_handler와 "
+                                "해당 app/mcp/scenarios 파일의 output 함수를 확인하세요."
                             ),
                             retry_count=0,
                             context={
                                 "agent_code": single.agent_code,
-                                "detail_scenario_code": (
-                                    single.detail_scenario_code
-                                ),
+                                "detail_scenario_code": (single.detail_scenario_code),
                                 "tool_name": result.tool_name,
                                 "mcp_request_id": result.request_id,
                             },
@@ -1009,6 +1739,54 @@ class MasterIntentGraph:
                                 "error": str(exc),
                             }
                         )
+                    else:
+                        formatted = result.formatted_result
+                        output_handler_code = (
+                            formatted.get("output_handler_code")
+                            if isinstance(formatted, Mapping)
+                            else None
+                        )
+                        self._trace_recorder.record(
+                            "MCP함수결과전처리완료",
+                            {
+                                **state,
+                                "mcp_output_trace": {
+                                    "agentCode": single.agent_code,
+                                    "detailScenarioCode": (
+                                        single.detail_scenario_code
+                                    ),
+                                    "outputHandlerCode": output_handler_code,
+                                    "resultFormat": result.result_format,
+                                    "preprocessedData": (
+                                        formatted.get("data")
+                                        if isinstance(formatted, Mapping)
+                                        else None
+                                    ),
+                                    "renderableCount": (
+                                        len(formatted.get("renderables", []))
+                                        if isinstance(formatted, Mapping)
+                                        and isinstance(
+                                            formatted.get("renderables"), list
+                                        )
+                                        else 0
+                                    ),
+                                },
+                                "mcp_workflow_results": [
+                                    item.model_dump(mode="json")
+                                    for item in workflow_results
+                                ],
+                                "mcp_results": [
+                                    item.model_dump(mode="json")
+                                    for item in (*results, result)
+                                ],
+                            },
+                        )
+                    # workflow 추적의 마지막 step도 정제 결과로 교체하되,
+                    # 답변용 results에는 세부 시나리오당 terminal 결과 하나만 넣는다.
+                    if workflow_results and (
+                        workflow_results[-1].request_id == result.request_id
+                    ):
+                        workflow_results[-1] = result
                     results.append(result)
                     logger.info(
                         "======== MCP 개별 실행 완료 | 도구=%s | 성공=%s | "
@@ -1027,12 +1805,12 @@ class MasterIntentGraph:
                 code_location="app/graph.py:MasterIntentGraph._call_mcp",
                 exc=exc,
                 likely_cause=(
-                    "MCP payload 생성, GenOS HTTP 호출, 원본 응답 변환 또는 "
+                    "MCP 요청 조립, GenOS HTTP 호출, 원본 응답 변환 또는 "
                     "조회형 결과 어댑터 처리 실패"
                 ),
                 corrective_action=(
-                    "바로 앞의 MCP 실패 진단과 app/mcp/payloads.py의 해당 "
-                    "세부 시나리오, app/mcp/client.py와 "
+                    "바로 앞의 MCP 실패 진단과 app/mcp/scenarios의 해당 "
+                    "세부 시나리오, app/mcp/request_builder.py, app/mcp/client.py와 "
                     "app/mcp/result_adapters.py를 확인하세요."
                 ),
                 retry_count=0,
@@ -1040,8 +1818,7 @@ class MasterIntentGraph:
                     "graph_node": "call_mcp",
                     "agent_code": subagent.agent_code,
                     "detail_scenario_codes": [
-                        match.detail_scenario_code
-                        for match in subagent.matches
+                        match.detail_scenario_code for match in subagent.matches
                     ],
                     "start_index": start_index,
                     "completed_result_count": len(results),
@@ -1049,7 +1826,15 @@ class MasterIntentGraph:
             )
             self._trace_recorder.record(
                 "MCP도구호출오류",
-                state,
+                {
+                    **state,
+                    "mcp_workflow_results": [
+                        item.model_dump(mode="json") for item in workflow_results
+                    ],
+                    "mcp_results": [
+                        item.model_dump(mode="json") for item in results
+                    ],
+                },
                 elapsed_seconds=perf_counter() - started_at,
                 error=exc,
             )
@@ -1060,18 +1845,28 @@ class MasterIntentGraph:
                 subagent.agent_code,
                 len(subagent.matches),
             )
-            return {"mcp": None, "mcp_results": []}
+            return {
+                "mcp": None,
+                "mcp_workflow_results": [
+                    item.model_dump(mode="json") for item in workflow_results
+                ],
+                "mcp_results": [],
+            }
         logger.info(
-            "======== MCP 다중 실행 완료 | 실행개수=%d | 도구=%s | 성공=%s",
+            "======== MCP 다중 실행 완료 | 최종결과개수=%d | "
+            "workflow단계개수=%d | 도구=%s | 성공=%s",
             len(results),
+            len(workflow_results),
             [result.tool_name for result in results],
             [result.succeeded for result in results],
         )
-        serialized_results = [
-            result.model_dump(mode="json") for result in results
+        serialized_results = [result.model_dump(mode="json") for result in results]
+        serialized_workflow_results = [
+            result.model_dump(mode="json") for result in workflow_results
         ]
         update = {
             "mcp": serialized_results[0],
+            "mcp_workflow_results": serialized_workflow_results,
             "mcp_results": serialized_results,
             "mcp_start_index": len(subagent.matches),
             "status": "PASS",
@@ -1116,7 +1911,10 @@ class MasterIntentGraph:
     async def _clear_hitl_state(self, state: MasterState) -> MasterState:
         """승인 완료 후 더 이상 필요 없는 HITL 상태를 삭제한다."""
 
-        await self._hitl_store.delete(state["thread_id"])
+        await self._hitl_store.delete(
+            state["thread_id"],
+            project_code=_request_project_code(state),
+        )
         # 삭제 자체는 부수효과이므로 현재 thread_id를 유지하는 상태 쓰기를
         # 반환해 LangGraph의 빈 업데이트 오류를 방지한다.
         return {"thread_id": state["thread_id"]}
@@ -1133,30 +1931,29 @@ class MasterIntentGraph:
         session_id: str,
         message: str,
         frontend_agent_code: str | None,
+        recommendation_id: str | None = None,
         request_context: dict[str, Any] | None = None,
     ) -> MasterResult:
         """새 질문에 대한 stateless 그래프 실행을 시작한다."""
 
         logger.info(
-            "======== LangGraph 신규 시작 | thread_id=%s | "
-            "session_id=%s",
+            "======== LangGraph 신규 시작 | thread_id=%s | session_id=%s",
             thread_id,
             session_id,
         )
         input_state: MasterState = {
-                "entry_stage": "NEW_CHAT",
-                "thread_id": thread_id,
-                "message": message,
-                "message_id": thread_id,
-                "employee_id": employee_id,
-                "session_id": session_id,
-                "frontend_agent_code": (
-                    frontend_agent_code.upper()
-                    if frontend_agent_code is not None
-                    else None
-                ),
-                "request_context": dict(request_context or {}),
-            }
+            "entry_stage": "NEW_CHAT",
+            "thread_id": thread_id,
+            "message": message,
+            "message_id": thread_id,
+            "employee_id": employee_id,
+            "session_id": session_id,
+            "frontend_agent_code": (
+                frontend_agent_code.upper() if frontend_agent_code is not None else None
+            ),
+            "recommendation_id": recommendation_id,
+            "request_context": dict(request_context or {}),
+        }
         self._trace_recorder.record("요청도착", input_state)
         state = await self._graph.ainvoke(input_state)
         self._trace_recorder.record("요청처리완료", state)
@@ -1187,11 +1984,17 @@ class MasterIntentGraph:
         """
 
         logger.info(
-            "======== Redis HITL 재개 시작 | thread_id=%s | 입력=%s",
+            "======== Redis HITL 재개 시작 | thread_id=%s | 입력코드=%s",
             thread_id,
-            value,
+            sorted(value) if isinstance(value, dict) else type(value).__name__,
         )
-        entry = await self._hitl_store.get(thread_id)
+        request_project_code = str(
+            (request_context or {}).get("endpoint", "")
+        ).strip() or None
+        entry = await self._hitl_store.get(
+            thread_id,
+            project_code=request_project_code,
+        )
         if entry is None:
             raise HitlStateNotFoundError(thread_id)
 
@@ -1201,8 +2004,7 @@ class MasterIntentGraph:
             expected_employee_id is not None
             and stored_employee_id != expected_employee_id
         ) or (
-            expected_session_id is not None
-            and stored_session_id != expected_session_id
+            expected_session_id is not None and stored_session_id != expected_session_id
         ):
             logger.info(
                 "======== Redis HITL 범위 불일치 | thread_id=%s | "
@@ -1231,15 +2033,11 @@ class MasterIntentGraph:
         self._trace_recorder.record("HITL재진입", restored_state)
         logger.info(
             "======== Redis HITL 그래프 상태 복원 | thread_id=%s | "
-            "유형=%s | 진입단계=%s | 복원상태=%s | 요청컨텍스트키=%s",
+            "유형=%s | 진입단계=%s | 복원상태키=%s | 요청컨텍스트키=%s",
             thread_id,
             entry.hitl_type,
             restored_state["entry_stage"],
-            {
-                key: value
-                for key, value in restored_state.items()
-                if key != "request_context"
-            },
+            sorted(key for key in restored_state if key != "request_context"),
             sorted(restored_state.get("request_context", {})),
         )
         state = await self._graph.ainvoke(restored_state)
@@ -1250,13 +2048,12 @@ class MasterIntentGraph:
     def _to_result(thread_id: str, state: MasterState) -> MasterResult:
         """일반 Redis HITL 요청을 포함한 그래프 상태를 API 결과로 변환한다."""
 
-        classification = IntentClassification.model_validate(
-            state["classification"]
-        )
+        classification = IntentClassification.model_validate(state["classification"])
         status = state["status"]
         interrupt = state.get("interrupt")
         subagent_data = state.get("subagent")
         mcp_data = state.get("mcp")
+        mcp_workflow_results_data = state.get("mcp_workflow_results", [])
         mcp_results_data = state.get("mcp_results", [])
         logger.info(
             "======== 그래프 결과 변환 | 상태=%s | thread_id=%s",
@@ -1278,8 +2075,14 @@ class MasterIntentGraph:
                 if mcp_data is not None
                 else None
             ),
-            mcp_results=[
+            mcp_workflow_results=[
                 McpExecutionResult.model_validate(item)
-                for item in mcp_results_data
+                for item in mcp_workflow_results_data
             ],
+            mcp_results=[
+                McpExecutionResult.model_validate(item) for item in mcp_results_data
+            ],
+            direct_answer=state.get("direct_answer"),
+            recommended_questions_override=state.get("recommended_questions_override"),
+            chat_history=list(state.get("chat_history", [])),
         )

@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 import httpx
@@ -14,7 +14,13 @@ from app.mcp.models import (
     MCP_SAFE_ERROR_MESSAGE,
     McpExecutionResult,
 )
-from app.mcp.payloads import McpParameterInputRequired, build_mcp_payload
+from app.mcp.exceptions import McpParameterInputRequired
+from app.mcp.request_builder import (
+    build_mcp_workflow_step_request,
+    get_mcp_workflow_step,
+    get_mcp_workflow_step_code,
+    get_mcp_workflow_step_count,
+)
 from app.observability import (
     async_timed_block,
     log_failure_diagnostic,
@@ -35,6 +41,12 @@ class McpToolExecutor(Protocol):
         session_id: str,
         thread_id: str,
         request_context: dict[str, Any] | None = None,
+        workflow_step_index: int = 0,
+        previous_results: Sequence[McpExecutionResult] = (),
+        current_item: Any = None,
+        workflow_item_index: int | None = None,
+        workflow_item_count: int | None = None,
+        argument_overrides: Mapping[str, Any] | None = None,
     ) -> McpExecutionResult | None: ...
 
     async def aclose(self) -> None: ...
@@ -51,6 +63,12 @@ class EmptyMcpToolExecutor:
         session_id: str,
         thread_id: str,
         request_context: dict[str, Any] | None = None,
+        workflow_step_index: int = 0,
+        previous_results: Sequence[McpExecutionResult] = (),
+        current_item: Any = None,
+        workflow_item_index: int | None = None,
+        workflow_item_count: int | None = None,
+        argument_overrides: Mapping[str, Any] | None = None,
     ) -> McpExecutionResult | None:
         return None
 
@@ -59,10 +77,11 @@ class EmptyMcpToolExecutor:
 
 
 class GenosMcpToolExecutor:
-    """Python 코드로 만든 payload를 GenOS MCP에 전송한다.
+    """Python 코드로 만든 JSON-RPC 요청을 GenOS MCP에 전송한다.
 
-    시나리오별 도구명과 arguments는 ``app/mcp/payloads.py``가 담당한다.
-    이 클래스는 공통 추적 ID, HTTP 전송, 응답 파싱, 민감정보 마스킹만 맡는다.
+    현재 시나리오별 도구명과 arguments는 ``app/mcp/scenarios``의 handler가
+    결정하고, 공통 요청 조립은 ``app/mcp/request_builder.py``가 담당한다. 이
+    클래스는 공통 추적 ID, HTTP 전송, 응답 파싱, 민감정보 마스킹만 맡는다.
     MCP 응답은 httpx ``post``로 body 전체를 수신한 뒤 단일 dict로 반환한다.
     GenOS가 Content-Type을 ``text/event-stream``으로 주는 경우도 내부에서 마지막
     JSON-RPC data를 추출할 뿐, MCP chunk를 FastAPI SSE로 전달하지 않는다.
@@ -73,15 +92,11 @@ class GenosMcpToolExecutor:
         if settings.mcp_backend not in {"mock", "http"}:
             raise ValueError("MCP_BACKEND는 mock 또는 http만 사용할 수 있습니다.")
         if settings.mcp_backend == "http" and not settings.mcp_bearer_token:
-            raise ValueError(
-                "MCP_BACKEND=http인 경우 MCP_BEARER_TOKEN이 필요합니다."
-            )
+            raise ValueError("MCP_BACKEND=http인 경우 MCP_BEARER_TOKEN이 필요합니다.")
 
         self._settings = settings
         mcp_url = (
-            settings.genos_mcp_url
-            if settings.mcp_backend == "http"
-            else "mock://local"
+            settings.genos_mcp_url if settings.mcp_backend == "http" else "mock://local"
         )
         self._http_client = (
             httpx.AsyncClient(
@@ -101,7 +116,8 @@ class GenosMcpToolExecutor:
         logger.info(
             "======== MCP 실행기 준비 완료 | 백엔드=%s | MCP주소=%s | "
             "타임아웃=%.3f초 | 자동재시도=%d회 | "
-            "payload설정파일=app/mcp/payloads.py | "
+            "업무호출설정=app/mcp/scenarios | "
+            "공통요청조립=app/mcp/request_builder.py | "
             "HTTP호출코드=app/mcp/client.py:GenosMcpToolExecutor.execute",
             settings.mcp_backend,
             mcp_url,
@@ -109,7 +125,10 @@ class GenosMcpToolExecutor:
             settings.mcp_max_retries,
         )
 
-    @timed("MCP 도구 호출")
+    @timed(
+        "MCP 도구 호출",
+        expected_exceptions=(McpParameterInputRequired,),
+    )
     async def execute(
         self,
         *,
@@ -118,18 +137,72 @@ class GenosMcpToolExecutor:
         session_id: str,
         thread_id: str,
         request_context: dict[str, Any] | None = None,
+        workflow_step_index: int = 0,
+        previous_results: Sequence[McpExecutionResult] = (),
+        current_item: Any = None,
+        workflow_item_index: int | None = None,
+        workflow_item_count: int | None = None,
+        argument_overrides: Mapping[str, Any] | None = None,
     ) -> McpExecutionResult | None:
         context = dict(request_context or {})
+        workflow_step_count = get_mcp_workflow_step_count(subagent)
+        workflow_step_code = get_mcp_workflow_step_code(
+            subagent,
+            workflow_step_index,
+        )
+        workflow_step = get_mcp_workflow_step(subagent, workflow_step_index)
+        workflow_execution_mode = (
+            workflow_step.execution.mode if workflow_step is not None else "single"
+        )
+
+        def complete_step(result: McpExecutionResult) -> McpExecutionResult:
+            return result.model_copy(
+                update={
+                    "workflow_step_code": workflow_step_code,
+                    "workflow_step_index": workflow_step_index,
+                    "workflow_step_count": workflow_step_count,
+                    "workflow_is_final": (
+                        workflow_step_index == workflow_step_count - 1
+                        and workflow_execution_mode == "single"
+                    ),
+                    "workflow_execution_mode": workflow_execution_mode,
+                    "workflow_item_index": workflow_item_index,
+                    "workflow_item_count": workflow_item_count,
+                    "workflow_source_step_code": (
+                        workflow_step.execution.source_step
+                        if workflow_step is not None
+                        else None
+                    ),
+                    "workflow_is_aggregate": False,
+                    "workflow_input_mapper_code": (
+                        workflow_step.input_mapper
+                        if workflow_step is not None
+                        else None
+                    ),
+                }
+            )
+
         request_id = build_mcp_request_id(
             project_code=self._settings.project_code,
             employee_id=employee_id,
             session_id=session_id,
             thread_id=thread_id,
             detail_scenario_code=subagent.detail_scenario_code,
+            workflow_step_code=workflow_step_code,
+            workflow_item_index=workflow_item_index,
         )
         secrets = _collect_sensitive_values(
             context.get("access_token"),
             self._settings.mcp_bearer_token,
+            *(
+                subagent.parameters.get(step.parameter_name)
+                for step in (
+                    subagent.interaction.steps
+                    if subagent.interaction is not None
+                    else []
+                )
+                if step.sensitive
+            ),
         )
         safe_input = _redact_sensitive(
             {
@@ -139,6 +212,19 @@ class GenosMcpToolExecutor:
                 "agent_code": subagent.agent_code,
                 "scenario_code": subagent.scenario_code,
                 "detail_scenario_code": subagent.detail_scenario_code,
+                "workflow_step_code": workflow_step_code,
+                "workflow_step_index": workflow_step_index,
+                "workflow_step_count": workflow_step_count,
+                "previous_step_codes": [
+                    result.workflow_step_code for result in previous_results
+                ],
+                "workflow_item_index": workflow_item_index,
+                "workflow_item_count": workflow_item_count,
+                "workflow_input_mapper_code": (
+                    workflow_step.input_mapper
+                    if workflow_step is not None
+                    else None
+                ),
                 "parameters": subagent.parameters,
                 "request_context": context,
             },
@@ -151,20 +237,25 @@ class GenosMcpToolExecutor:
         )
 
         try:
-            payload = build_mcp_payload(
+            request_body = build_mcp_workflow_step_request(
                 request_id=request_id,
                 subagent=subagent,
                 employee_id=employee_id,
                 session_id=session_id,
                 thread_id=thread_id,
                 request_context=context,
+                step_index=workflow_step_index,
+                previous_results=previous_results,
+                current_item=current_item,
+                argument_overrides=argument_overrides,
             )
         except McpParameterInputRequired:
             # 필수 파라미터 누락은 장애가 아니라 정상 HITL 분기이므로 그래프가
             # action을 만들 수 있게 그대로 전달한다.
             logger.info(
-                "======== MCP Payload 생성 중 사용자 입력 필요 | "
-                "코드위치=app/mcp/payloads.py:build_mcp_payload | "
+                "======== MCP 요청 조립 중 사용자 입력 필요 | "
+                "코드위치=app/mcp/request_builder.py:"
+                "build_mcp_workflow_step_request | "
                 "에이전트=%s | 세부시나리오=%s | 자동재시도=없음",
                 subagent.agent_code,
                 subagent.detail_scenario_code,
@@ -172,57 +263,92 @@ class GenosMcpToolExecutor:
             raise
         except Exception as exc:
             log_failure_diagnostic(
-                stage="MCP 시나리오별 Payload 생성",
-                code_location="app/mcp/payloads.py:build_mcp_payload",
+                stage="MCP 시나리오별 요청 조립",
+                code_location=(
+                    "app/mcp/request_builder.py:build_mcp_workflow_step_request"
+                ),
                 exc=exc,
                 likely_cause=(
-                    "세부 시나리오 분기의 파라미터명·타입·날짜 변환 또는 "
-                    "request_context 처리 오류"
+                    "현재 workflow step의 파라미터명·이전 step objId·타입·"
+                    "날짜 변환 또는 request_context 처리 오류"
                 ),
                 corrective_action=(
-                    "app/mcp/payloads.py에서 로그의 detail_scenario_code 분기와 "
-                    "tool_name/arguments 생성 코드를 확인하세요."
+                    "함수형 호출이면 app/mcp/scenarios의 handler arguments를, "
+                    "선언형 호출이면 manifest mcp_workflow와 "
+                    "app/mcp/request_builder.py를 "
+                    "확인하세요."
                 ),
                 retry_count=0,
                 context=safe_input,
             )
-            return _mcp_error_result(
-                backend=self._settings.mcp_backend,
-                tool_name=subagent.detail_scenario_code,
-                request_id=request_id,
-                arguments={},
-                error=str(exc),
+            return complete_step(
+                _mcp_error_result(
+                    backend=self._settings.mcp_backend,
+                    tool_name=subagent.detail_scenario_code,
+                    request_id=request_id,
+                    arguments={},
+                    error=str(exc),
+                )
             )
-        if payload is None:
-            error = (
-                "MCP payload 설정이 없습니다: "
-                f"agent_code={subagent.agent_code}, "
-                f"detail_scenario_code={subagent.detail_scenario_code}"
+        tool_name = str(request_body["params"]["name"])
+        arguments = dict(request_body["params"].get("arguments", {}))
+        if subagent.interaction is not None:
+            sensitive_parameters = {
+                step.parameter_name
+                for step in subagent.interaction.steps
+                if step.sensitive
+            }
+            secrets.extend(
+                _collect_sensitive_values(
+                    *(
+                        arguments.get(argument_name)
+                        for argument_name, definition in (
+                            subagent.interaction.tool.arguments.items()
+                        )
+                        if definition.source == "parameter"
+                        and definition.key in sensitive_parameters
+                    )
+                )
             )
-            logger.error(
-                "======== MCP 코드 설정 없음 | 에이전트=%s | 세부시나리오=%s | "
-                "확인파일=app/mcp/payloads.py",
-                subagent.agent_code,
-                subagent.detail_scenario_code,
-            )
-            return _mcp_error_result(
-                backend=self._settings.mcp_backend,
-                tool_name=subagent.detail_scenario_code,
-                request_id=request_id,
-                arguments={},
-                error=error,
-            )
-
-        tool_name = str(payload["params"]["name"])
-        arguments = dict(payload["params"].get("arguments", {}))
-        safe_payload = _redact_sensitive(payload, secrets)
+        safe_request_body = _redact_sensitive(request_body, secrets)
         safe_arguments = _redact_sensitive(arguments, secrets)
         logger.info(
-            "======== MCP Payload 생성 완료 | 도구=%s | 추적ID=%s | payload=%s",
+            "======== MCP 요청 조립 완료 | 도구=%s | 추적ID=%s | request=%s",
             tool_name,
             request_id,
-            safe_payload,
+            safe_request_body,
         )
+
+        workflow_disabled = (
+            workflow_step is not None and not workflow_step.tool.enabled
+        )
+        interaction_disabled = (
+            workflow_step is None
+            and subagent.interaction is not None
+            and not subagent.interaction.tool.enabled
+        )
+        if workflow_disabled or interaction_disabled:
+            unavailable_message = (
+                workflow_step.tool.unavailable_message
+                if workflow_step is not None
+                else subagent.interaction.tool.unavailable_message
+            )
+            logger.info(
+                "======== 상호작용 MCP 호출 대기 | 도구=%s | 추적ID=%s | "
+                "manifest enabled=false | HTTP호출=생략",
+                tool_name,
+                request_id,
+            )
+            return complete_step(
+                McpExecutionResult(
+                    backend="disabled",
+                    tool_name=tool_name,
+                    request_id=request_id,
+                    arguments=safe_arguments,
+                    succeeded=True,
+                    user_message=unavailable_message,
+                )
+            )
 
         if self._settings.mcp_backend == "mock":
             mock_result = _build_mock_structured_content(
@@ -237,13 +363,15 @@ class GenosMcpToolExecutor:
                 request_id,
                 len(mock_result.get("data", [])),
             )
-            return McpExecutionResult(
-                backend="mock",
-                tool_name=tool_name,
-                request_id=request_id,
-                arguments=safe_arguments,
-                succeeded=True,
-                result=mock_result,
+            return complete_step(
+                McpExecutionResult(
+                    backend="mock",
+                    tool_name=tool_name,
+                    request_id=request_id,
+                    arguments=safe_arguments,
+                    succeeded=True,
+                    result=mock_result,
+                )
             )
 
         assert self._http_client is not None
@@ -261,7 +389,7 @@ class GenosMcpToolExecutor:
             async with async_timed_block("MCP HTTP 응답 대기"):
                 response = await self._http_client.post(
                     self._settings.genos_mcp_url,
-                    json=payload,
+                    json=request_body,
                 )
                 logger.info(
                     "======== MCP HTTP 응답 메타데이터 수신 | 도구=%s | "
@@ -293,39 +421,41 @@ class GenosMcpToolExecutor:
                 envelope.get("error") is not None,
             )
             if envelope.get("error") is not None:
-                error = _json_for_log(
-                    _redact_sensitive(envelope["error"], secrets)
-                )
+                error = _json_for_log(_redact_sensitive(envelope["error"], secrets))
                 logger.error(
                     "======== MCP 도구 오류 응답 | 도구=%s | 추적ID=%s | 오류=%s",
                     tool_name,
                     request_id,
                     error,
                 )
-                return _mcp_error_result(
-                    backend="http",
-                    tool_name=tool_name,
-                    request_id=request_id,
-                    arguments=safe_arguments,
-                    error=error,
+                return complete_step(
+                    _mcp_error_result(
+                        backend="http",
+                        tool_name=tool_name,
+                        request_id=request_id,
+                        arguments=safe_arguments,
+                        error=error,
+                    )
                 )
 
             result_envelope = envelope.get("result")
-            is_error = (
-                isinstance(result_envelope, dict)
-                and bool(result_envelope.get("isError", False))
+            is_error = isinstance(result_envelope, dict) and bool(
+                result_envelope.get("isError", False)
             )
-            structured_content = (
-                result_envelope.get("structuredContent")
-                if isinstance(result_envelope, dict)
-                else None
-            )
+            # 운영계 표준 계약인 JSON-RPC result.structuredContent 객체만
+            # 허용한다. 망별 문자열 재파싱은 잘못된 서버 응답을 숨길 수 있어
+            # 의도적으로 지원하지 않는다.
+            structured_content = _extract_mcp_structured_content(result_envelope)
 
             # _parse_mcp_response()가 반환한 전체 응답 기준 업무 코드 경로는
             # result.structuredContext.result.code다. 여기서는 이미 바깥쪽
             # result를 꺼낸 result_envelope을 전달한다.
             # 실제 값은 숫자 또는 문자열로 올 수 있으므로 문자열로 정규화한다.
             business_code = _extract_mcp_business_code(result_envelope)
+            if business_code is None and structured_content is not None:
+                business_code = _extract_mcp_business_code(
+                    {"structuredContent": structured_content}
+                )
             if business_code == "1001":
                 logger.info(
                     "======== MCP 조회 데이터 없음 | 도구=%s | 추적ID=%s | "
@@ -335,32 +465,32 @@ class GenosMcpToolExecutor:
                     business_code,
                     MCP_NO_DATA_MESSAGE,
                 )
-                return McpExecutionResult(
-                    backend="http",
-                    tool_name=tool_name,
-                    request_id=request_id,
-                    arguments=safe_arguments,
-                    succeeded=True,
-                    outcome="NO_DATA",
-                    business_code=business_code,
-                    user_message=MCP_NO_DATA_MESSAGE,
-                    result=(
-                        _redact_sensitive(structured_content, secrets)
-                        if isinstance(structured_content, dict)
-                        else None
-                    ),
+                return complete_step(
+                    McpExecutionResult(
+                        backend="http",
+                        tool_name=tool_name,
+                        request_id=request_id,
+                        arguments=safe_arguments,
+                        succeeded=True,
+                        outcome="NO_DATA",
+                        business_code=business_code,
+                        user_message=MCP_NO_DATA_MESSAGE,
+                        result=(
+                            _redact_sensitive(structured_content, secrets)
+                            if isinstance(structured_content, dict)
+                            else None
+                        ),
+                    )
                 )
 
             if not is_error and not isinstance(structured_content, dict):
                 raise ValueError(
-                    "GenOS MCP 응답의 result.structuredContent가 "
-                    "dict 형식이 아닙니다."
+                    "GenOS MCP 응답에서 result.structuredContent 객체를 "
+                    "찾지 못했습니다."
                 )
 
             safe_result = (
-                _redact_sensitive(structured_content, secrets)
-                if not is_error
-                else None
+                _redact_sensitive(structured_content, secrets) if not is_error else None
             )
             logger.info(
                 "======== MCP 호출 최종 결과 | 도구=%s | 추적ID=%s | "
@@ -369,19 +499,23 @@ class GenosMcpToolExecutor:
                 request_id,
                 not is_error,
             )
-            return McpExecutionResult(
-                backend="http",
-                tool_name=tool_name,
-                request_id=request_id,
-                arguments=safe_arguments,
-                succeeded=not is_error,
-                outcome="ERROR" if is_error else "SUCCESS",
-                business_code=business_code,
-                user_message=MCP_SAFE_ERROR_MESSAGE if is_error else None,
-                result=safe_result,
-                error="MCP 도구가 isError=true를 반환했습니다."
-                if is_error
-                else None,
+            return complete_step(
+                McpExecutionResult(
+                    backend="http",
+                    tool_name=tool_name,
+                    request_id=request_id,
+                    arguments=safe_arguments,
+                    succeeded=not is_error,
+                    outcome="ERROR" if is_error else "SUCCESS",
+                    business_code=business_code,
+                    user_message=MCP_SAFE_ERROR_MESSAGE if is_error else None,
+                    result=safe_result,
+                    error=(
+                        "MCP 도구가 isError=true를 반환했습니다."
+                        if is_error
+                        else None
+                    ),
+                )
             )
         except Exception as exc:
             safe_error = str(_redact_sensitive(str(exc), secrets))
@@ -406,19 +540,21 @@ class GenosMcpToolExecutor:
                     "mcp_request_id": request_id,
                     "url": self._settings.genos_mcp_url,
                     "timeout_seconds": self._settings.mcp_timeout_seconds,
-                    "payload": safe_payload,
+                    "request_body": safe_request_body,
                     "safe_error": safe_error,
                     **response_context,
                 },
             )
             # 오류 원문과 스택은 위 진단 로그에 남긴다. 프론트에는 내부 구조를
             # 노출하지 않고 최종 답변 단계에서 안전한 고정 문구만 스트리밍한다.
-            return _mcp_error_result(
-                backend="http",
-                tool_name=tool_name,
-                request_id=request_id,
-                arguments=safe_arguments,
-                error=safe_error,
+            return complete_step(
+                _mcp_error_result(
+                    backend="http",
+                    tool_name=tool_name,
+                    request_id=request_id,
+                    arguments=safe_arguments,
+                    error=safe_error,
+                )
             )
 
     async def aclose(self) -> None:
@@ -491,10 +627,7 @@ def _build_mock_structured_content(
                         "본인확인 서류를 확인하고, 세부 자격은 최신 업무지침을 "
                         "기준으로 안내합니다."
                     ),
-                    "source_uri": (
-                        "databricks://qualification/"
-                        "personal-member-policy"
-                    ),
+                    "source_uri": ("databricks://qualification/personal-member-policy"),
                     "updated_at": "2026-08-01",
                     "score": 0.97,
                     "matched_query": query,
@@ -507,9 +640,7 @@ def _build_mock_structured_content(
                         "본인확인에 필요한 유효 서류를 확인해야 하며, 실제 "
                         "적용 기준은 조회된 최신 규정을 따릅니다."
                     ),
-                    "source_uri": (
-                        "databricks://qualification/foreigner-policy"
-                    ),
+                    "source_uri": ("databricks://qualification/foreigner-policy"),
                     "updated_at": "2026-07-15",
                     "score": 0.91,
                     "matched_query": query,
@@ -550,8 +681,7 @@ def _redact_sensitive(value: Any, secrets: list[Any]) -> Any:
     secret_texts = {str(secret) for secret in secrets}
     if isinstance(value, Mapping):
         return {
-            str(key): _redact_sensitive(item, secrets)
-            for key, item in value.items()
+            str(key): _redact_sensitive(item, secrets) for key, item in value.items()
         }
     if isinstance(value, list):
         return [_redact_sensitive(item, secrets) for item in value]
@@ -594,9 +724,9 @@ def _mcp_failure_guidance(exc: BaseException) -> tuple[str, str]:
             cause = "GENOS_URL 또는 MCP_ID로 만든 MCP 엔드포인트가 존재하지 않음"
             action = ".env의 GENOS_URL과 MCP_ID를 확인하세요."
         elif status in {400, 422}:
-            cause = "MCP tool_name 또는 arguments payload가 도구 계약과 불일치"
+            cause = "MCP tool_name 또는 arguments가 도구 계약과 불일치"
             action = (
-                "app/mcp/payloads.py의 해당 세부 시나리오 tool_name과 "
+                "app/mcp/scenarios의 해당 세부 시나리오 handler에서 tool_name과 "
                 "arguments를 MCP 도구 명세와 비교하세요."
             )
         else:
@@ -610,9 +740,9 @@ def _mcp_failure_guidance(exc: BaseException) -> tuple[str, str]:
             "응답미리보기를 확인하고 MCP 반환 형식을 수정하세요.",
         )
     return (
-        "MCP payload 생성·HTTP 호출·응답 변환 중 예상하지 못한 애플리케이션 오류",
-        "현재 로그의 스택트레이스 마지막 코드 줄과 app/mcp/payloads.py 및 "
-        "app/mcp/client.py를 확인하세요.",
+        "MCP 요청 조립·HTTP 호출·응답 변환 중 예상하지 못한 애플리케이션 오류",
+        "현재 로그의 스택트레이스 마지막 코드 줄과 app/mcp/scenarios, "
+        "app/mcp/request_builder.py 및 app/mcp/client.py를 확인하세요.",
     )
 
 
@@ -623,12 +753,18 @@ def build_mcp_request_id(
     session_id: str,
     thread_id: str,
     detail_scenario_code: str | None = None,
+    workflow_step_code: str | None = None,
+    workflow_item_index: int | None = None,
 ) -> str:
-    """사원·대화·단일 실행을 사람이 역추적할 수 있는 JSON-RPC id를 만든다."""
+    """사원·대화·시나리오·workflow step을 역추적할 JSON-RPC id를 만든다."""
 
     raw = f"{project_code}:{employee_id}:{session_id}:{thread_id}"
     if detail_scenario_code:
         raw = f"{raw}:{detail_scenario_code}"
+    if workflow_step_code:
+        raw = f"{raw}:{workflow_step_code}"
+    if workflow_item_index is not None:
+        raw = f"{raw}:ITEM-{workflow_item_index + 1:04d}"
     normalized = re.sub(r"[^A-Za-z0-9_.:-]", "_", raw)
     if len(normalized) <= 240:
         return normalized
@@ -664,6 +800,18 @@ def _parse_mcp_response(response: httpx.Response) -> dict[str, Any]:
     if not candidates:
         raise ValueError("MCP SSE 응답에서 JSON-RPC 데이터를 찾지 못했습니다.")
     return candidates[-1]
+
+
+def _extract_mcp_structured_content(result_envelope: Any) -> dict[str, Any] | None:
+    """운영계 MCP 계약의 ``result.structuredContent`` 객체만 추출한다."""
+
+    if not isinstance(result_envelope, Mapping):
+        return None
+
+    structured_content = result_envelope.get("structuredContent")
+    if isinstance(structured_content, Mapping):
+        return dict(structured_content)
+    return None
 
 
 def _extract_mcp_business_code(result_envelope: Any) -> str | None:
@@ -716,6 +864,6 @@ def _mcp_error_result(
 
 @timed("MCP 실행기 생성")
 def create_mcp_tool_executor(settings: Settings) -> McpToolExecutor:
-    """코드 기반 payload 실행기를 생성한다."""
+    """코드 기반 MCP 실행기를 생성한다."""
 
     return GenosMcpToolExecutor(settings)

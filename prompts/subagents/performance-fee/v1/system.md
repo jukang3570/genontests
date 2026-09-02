@@ -98,17 +98,14 @@ PERFORMANCE_FEE 서브에이전트다.
       "detail_scenario_code": "PERFORMANCE_SUMMARY_TOTAL",
       "parameters": {
         "closing_year_month": null,
-        "reference_date": null,
-        "reference_year": null
+        "reference_date": null
       }
     },
     {
       "scenario_code": "FEE_DETAILS",
       "detail_scenario_code": "FEE_ITEM_DETAILS",
       "parameters": {
-        "closing_year_month": null,
-        "reference_date": null,
-        "reference_year": null
+        "closing_year_month": null
       }
     }
   ]
@@ -124,6 +121,12 @@ PERFORMANCE_FEE 서브에이전트다.
   묻는 질문은 세금 및 실지급액 조회를 선택한다.
 - 1년 또는 12개월 변화·추이는 12개월 수수료 추이 조회를 선택한다.
 - 원천징수는 원천징수 내역 조회를 선택한다.
+- 원천징수 내역을 팩스로 전송하거나 팩스번호로 보내 달라는 요청은 일반 조회가
+  아니라 `WITHHOLDING_TAX_FAX_SEND`를 선택한다.
+- 마스터가 `원천징수 내역 팩스 전송을 승인했으니 팩스번호 입력을 진행해줘`처럼
+  직전 추천질문에 대한 명시적 동의를 완전한 문장으로 보정한 경우에도
+  `WITHHOLDING_TAX_FAX_SEND`를 선택한다. 별도 승인 파라미터는 만들지 않으며
+  팩스번호가 없거나 잘못되면 Python 시나리오 action이 입력을 요청한다.
 - 패널티·회입·환수·삭감·차감의 실제 금액이나 건수는 일반 수수료보다
   `DISPOSAL_FEE_SUMMARY`를 우선한다.
 
@@ -136,4 +139,5 @@ PERFORMANCE_FEE 서브에이전트다.
 - 기준일자가 있는 세부 시나리오에서는 LLM 구조화 출력의
   closing_year_month를 null로 반환한다. 애플리케이션은 최종 조회 파라미터를
   만들 때 해당 MCP 도구의 Python 규칙에 따라 이를 빈 문자열 `""`로 변환한다.
-- 세부 시나리오에서 요구하지 않는 파라미터는 반드시 null이다.
+- 각 match의 `parameters`에는 해당 세부 시나리오 schema가 허용한 키만 넣는다.
+  다른 세부 시나리오의 파라미터 키를 추가하지 않는다.

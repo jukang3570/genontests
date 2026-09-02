@@ -6,7 +6,15 @@ from typing import Any
 
 import yaml
 
+from app.hitl import register_hitl_input_guardrail_policy
+from app.mcp.workflow_handlers import (
+    INPUT_MAPPER_REGISTRY,
+    RESULT_FORMATTER_REGISTRY,
+)
+from app.mcp.scenarios.registry import get_scenario_handler_spec
 from app.observability import logger, timed
+from app.subagents.fixed_responses import get_subagent_fixed_response
+from app.subagents.models import ScenarioInteraction, ScenarioMcpWorkflow
 
 
 @dataclass(frozen=True)
@@ -30,10 +38,7 @@ class SubagentPromptLoader:
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = (
-            root
-            or Path(__file__).resolve().parents[2]
-            / "prompts"
-            / "subagents"
+            root or Path(__file__).resolve().parents[2] / "prompts" / "subagents"
         )
 
     @timed("서브에이전트 registry 조회")
@@ -89,9 +94,7 @@ class SubagentPromptLoader:
         paths = [version_root / path for path in configured_files]
         missing = [str(path) for path in paths if not path.is_file()]
         if missing:
-            raise FileNotFoundError(
-                f"서브에이전트 프롬프트 파일이 없습니다: {missing}"
-            )
+            raise FileNotFoundError(f"서브에이전트 프롬프트 파일이 없습니다: {missing}")
 
         # manifest에 적지 않은 Markdown을 실수로 추가해도 누락되지 않도록
         # 선언된 파일 뒤에 정렬하여 결합한다.
@@ -116,9 +119,7 @@ class SubagentPromptLoader:
             agent_code=str(manifest["agent_code"]).upper(),
             version=version,
             system_prompt="\n\n---\n\n".join(parts),
-            temperature=float(
-                manifest.get("model", {}).get("temperature", 0)
-            ),
+            temperature=float(manifest.get("model", {}).get("temperature", 0)),
             manifest=manifest,
             files=tuple(relative_files),
         )
@@ -138,6 +139,10 @@ class SubagentPromptLoader:
 
         scenario_codes: set[str] = set()
         detail_codes: set[str] = set()
+        parameter_names = {
+            str(name) for name in manifest.get("parameter_definitions", {})
+        }
+        agent_code = str(manifest["agent_code"]).upper()
 
         for scenario in manifest["scenarios"]:
             scenario_code = str(scenario["code"])
@@ -148,10 +153,96 @@ class SubagentPromptLoader:
             for detail in scenario["details"]:
                 detail_code = str(detail["code"])
                 if detail_code in detail_codes:
-                    raise ValueError(
-                        f"중복 세부 시나리오 코드입니다: {detail_code}"
-                    )
+                    raise ValueError(f"중복 세부 시나리오 코드입니다: {detail_code}")
                 detail_codes.add(detail_code)
+
+                configured_parameters = detail.get("parameters", [])
+                if not isinstance(configured_parameters, list):
+                    raise ValueError(
+                        "detail.parameters는 파라미터 이름 배열이어야 합니다: "
+                        f"detail={detail_code}"
+                    )
+                detail_parameters = {str(name) for name in configured_parameters}
+                if len(detail_parameters) != len(configured_parameters):
+                    raise ValueError(
+                        "detail.parameters에는 중복 값을 사용할 수 없습니다: "
+                        f"detail={detail_code}"
+                    )
+                unknown_detail_parameters = detail_parameters - parameter_names
+                if unknown_detail_parameters:
+                    raise ValueError(
+                        "detail이 선언되지 않은 parameter를 참조합니다: "
+                        f"detail={detail_code}, "
+                        f"parameters={sorted(unknown_detail_parameters)}"
+                    )
+
+                raw_interaction = detail.get("interaction")
+                if raw_interaction is not None:
+                    interaction = ScenarioInteraction.model_validate(raw_interaction)
+                    for step in interaction.steps:
+                        register_hitl_input_guardrail_policy(
+                            step.input_code,
+                            enabled=step.guardrail_enabled,
+                        )
+                    unknown_parameters = {
+                        step.parameter_name for step in interaction.steps
+                    } - detail_parameters
+                    if unknown_parameters:
+                        raise ValueError(
+                            "interaction step이 detail.parameters 밖의 값을 참조합니다: "
+                            f"detail={detail_code}, "
+                            f"parameters={sorted(unknown_parameters)}"
+                        )
+                    for argument_name, argument in interaction.tool.arguments.items():
+                        SubagentPromptLoader._validate_argument_source(
+                            detail_code=detail_code,
+                            argument_name=argument_name,
+                            source=argument.source,
+                            key=argument.key,
+                            allowed_parameters=detail_parameters,
+                        )
+
+                raw_workflow = detail.get("mcp_workflow")
+                if raw_workflow is not None:
+                    workflow = ScenarioMcpWorkflow.model_validate(raw_workflow)
+                    if (
+                        workflow.result_formatter
+                        and workflow.result_formatter not in RESULT_FORMATTER_REGISTRY
+                    ):
+                        raise ValueError(
+                            "등록되지 않은 mcp_workflow.result_formatter입니다: "
+                            f"detail={detail_code}, "
+                            f"formatter={workflow.result_formatter}"
+                        )
+                    for step in workflow.steps:
+                        if (
+                            step.input_mapper
+                            and step.input_mapper not in INPUT_MAPPER_REGISTRY
+                        ):
+                            raise ValueError(
+                                "등록되지 않은 mcp_workflow input_mapper입니다: "
+                                f"detail={detail_code}, step={step.code}, "
+                                f"mapper={step.input_mapper}"
+                            )
+                        for argument_name, argument in step.tool.arguments.items():
+                            if argument.source == "step_result":
+                                continue
+                            SubagentPromptLoader._validate_argument_source(
+                                detail_code=detail_code,
+                                argument_name=(f"{step.code}.{argument_name}"),
+                                source=argument.source,
+                                key=argument.key,
+                                allowed_parameters=detail_parameters,
+                            )
+                elif (
+                    get_subagent_fixed_response(agent_code, detail_code) is None
+                    and get_scenario_handler_spec(agent_code, detail_code) is None
+                ):
+                    raise ValueError(
+                        "고정답변이 아닌 detail에 Python MCP handler가 없습니다: "
+                        f"agent={agent_code}, detail={detail_code}. "
+                        "app/mcp/scenarios/registry.py에 등록하세요."
+                    )
 
         # 복합 질문 보완 규칙이 존재하면 현재 서브에이전트에 실제 등록된 세부
         # 시나리오만 참조하는지 시작 시점에 검증한다.
@@ -169,3 +260,39 @@ class SubagentPromptLoader:
                     "required_match_rules에 알 수 없는 세부 시나리오가 있습니다: "
                     f"{sorted(unknown_details)}"
                 )
+
+    @staticmethod
+    def _validate_argument_source(
+        *,
+        detail_code: str,
+        argument_name: str,
+        source: str,
+        key: str | None,
+        allowed_parameters: set[str],
+    ) -> None:
+        """interaction/workflow argument의 정적 source key를 시작 시 검증한다."""
+
+        if source == "parameter" and key not in allowed_parameters:
+            raise ValueError(
+                "MCP argument가 detail.parameters 밖의 값을 참조합니다: "
+                f"detail={detail_code}, argument={argument_name}, key={key}"
+            )
+        if source == "runtime" and key not in {
+            "employee_id",
+            "session_id",
+            "thread_id",
+        }:
+            raise ValueError(
+                "MCP runtime key가 올바르지 않습니다: "
+                f"detail={detail_code}, key={key}"
+            )
+        if source == "date" and key not in {
+            "current_date",
+            "current_year",
+            "current_year_month",
+            "previous_year",
+        }:
+            raise ValueError(
+                "MCP date key가 올바르지 않습니다: "
+                f"detail={detail_code}, key={key}"
+            )

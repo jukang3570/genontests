@@ -18,8 +18,13 @@ parameter_definitions:
       - "NEW_MEMBER"
       - "FOREIGNER"
       - "MINOR"
-  search_query:
-    description: "선택한 자격기준 시나리오의 Databricks 하이브리드 검색에 사용할 자연어 검색문. 모든 시나리오에서 반드시 질문의 업무 의미를 유지해 작성"
+  rag_query:
+    description: "마스터 보정 질문에서 현재 세부 시나리오에 해당하는 요청만 분리해 만든 독립적인 Databricks 검색 질문. 원래 의미를 유지하고 새로운 조건을 추가하지 않음"
+  keywords:
+    value_type: "string_list"
+    min_items: 1
+    max_items: 10
+    description: "선택한 자격기준 세부 시나리오의 Databricks 하이브리드 검색에 사용할 핵심 업무 키워드 배열. 마스터 보정 질문을 그대로 복제하지 말고 대상·조건·문서유형 중심으로 1~10개 추출"
 
 scenarios:
   - code: "PERSONAL_MEMBER_QUALIFICATION"
@@ -29,12 +34,33 @@ scenarios:
       - code: "NEW_MEMBER_QUALIFICATION"
         name: "신규회원 입회 자격기준"
         description: "일반 신규 개인회원의 입회 가능 조건과 제한 기준 조회"
+        parameters:
+          - "member_category"
+          - "rag_query"
+          - "keywords"
+        recommended_questions:
+          - "신규회원 입회 제한 조건을 알려줘"
+          - "신규회원에게 필요한 서류를 알려줘"
       - code: "FOREIGNER_QUALIFICATION"
         name: "외국인 입회 자격기준"
         description: "외국인 개인회원의 체류자격·본인확인·입회 조건 조회"
+        parameters:
+          - "member_category"
+          - "rag_query"
+          - "keywords"
+        recommended_questions:
+          - "외국인 회원에게 필요한 서류를 알려줘"
+          - "외국인 회원의 본인확인 기준을 알려줘"
       - code: "MINOR_QUALIFICATION"
         name: "미성년자 입회 자격기준"
         description: "미성년자 개인회원의 연령·법정대리인·입회 조건 조회"
+        parameters:
+          - "member_category"
+          - "rag_query"
+          - "keywords"
+        recommended_questions:
+          - "미성년자 회원에게 필요한 서류를 알려줘"
+          - "법정대리인 동의 기준을 알려줘"
 
   - code: "FAMILY_CARD_QUALIFICATION"
     name: "가족카드 발급 및 자격기준"
@@ -43,6 +69,12 @@ scenarios:
       - code: "FAMILY_CARD_ISSUANCE_QUALIFICATION"
         name: "가족카드 발급 및 자격기준 조회"
         description: "가족카드 발급 범위와 신청 자격 및 제한 조건 조회"
+        parameters:
+          - "rag_query"
+          - "keywords"
+        recommended_questions:
+          - "가족카드 신청에 필요한 서류를 알려줘"
+          - "가족카드 발급 제한 조건을 알려줘"
 
   - code: "INCOME_PROOF_DOCUMENTS"
     name: "소득증빙 인정서류 확인 기준"
@@ -51,3 +83,9 @@ scenarios:
       - code: "INCOME_PROOF_ACCEPTANCE_CRITERIA"
         name: "소득증빙 인정서류 확인 기준 조회"
         description: "근로·사업·연금·재산소득 등 소득증빙 인정서류와 검증 기준 조회"
+        parameters:
+          - "rag_query"
+          - "keywords"
+        recommended_questions:
+          - "근로소득 인정서류를 알려줘"
+          - "사업소득 인정서류를 알려줘"

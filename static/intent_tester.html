@@ -37,7 +37,7 @@
     }
 
     main {
-      width: min(1080px, calc(100% - 32px));
+      width: min(1560px, calc(100% - 32px));
       margin: 32px auto 64px;
     }
 
@@ -64,7 +64,7 @@
 
     .layout {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-columns: minmax(340px, 0.72fr) minmax(620px, 1.28fr);
       gap: 18px;
       align-items: start;
     }
@@ -163,51 +163,6 @@
       border: 1px solid var(--line);
       background: #fff;
       color: #344054;
-    }
-
-    .danger {
-      min-height: 34px;
-      padding: 0 12px;
-      background: var(--danger);
-      color: #fff;
-      font-size: 12px;
-    }
-
-    .session-manager {
-      grid-column: 1 / -1;
-    }
-
-    .manager-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .manager-header h2 {
-      margin: 0;
-    }
-
-    .session-list {
-      display: grid;
-      gap: 10px;
-    }
-
-    .session-row {
-      display: grid;
-      grid-template-columns: minmax(120px, 0.7fr) minmax(180px, 1.4fr)
-        minmax(180px, 1fr) auto;
-      gap: 12px;
-      align-items: center;
-      padding: 13px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-    }
-
-    .session-row span {
-      overflow-wrap: anywhere;
-      font-size: 13px;
     }
 
     .approve {
@@ -383,6 +338,40 @@
       margin-top: 14px;
     }
 
+    .recommended-questions {
+      margin-top: 16px;
+      padding: 14px;
+      border: 1px solid #b2ddff;
+      border-radius: 12px;
+      background: #eff8ff;
+    }
+
+    .recommended-questions h4 {
+      margin: 0 0 10px;
+      color: #175cd3;
+      font-size: 14px;
+    }
+
+    .recommended-question-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .recommended-question {
+      min-height: 36px;
+      padding: 7px 11px;
+      border: 1px solid #84caff;
+      background: #fff;
+      color: #175cd3;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .recommended-question:hover:not(:disabled) {
+      background: #d1e9ff;
+    }
+
     .renderable-card {
       padding: 12px;
       overflow-x: auto;
@@ -417,6 +406,160 @@
       max-height: 260px;
     }
 
+    .trace-dashboard {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 18px 0 12px;
+    }
+
+    .trace-metric {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8fafc;
+    }
+
+    .trace-metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .trace-metric strong {
+      display: block;
+      margin-top: 3px;
+      font-size: 17px;
+    }
+
+    .trace-timeline {
+      display: grid;
+      gap: 9px;
+      max-height: 720px;
+      margin-top: 12px;
+      padding-right: 4px;
+      overflow-y: auto;
+    }
+
+    .trace-stage {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-left: 5px solid #98a2b3;
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    .trace-stage.completed { border-left-color: var(--success); }
+    .trace-stage.started { border-left-color: var(--primary); }
+    .trace-stage.failed,
+    .trace-stage.stopped {
+      border-color: #fecdca;
+      border-left-color: var(--danger);
+      background: var(--danger-bg);
+    }
+
+    .trace-stage-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .trace-stage-title {
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.45;
+    }
+
+    .trace-stage-meta {
+      margin-top: 5px;
+      color: var(--muted);
+      font: 11px/1.5 Consolas, Monaco, monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .trace-phase {
+      flex: 0 0 auto;
+      padding: 4px 7px;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #3538cd;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .trace-stage.failed .trace-phase,
+    .trace-stage.stopped .trace-phase {
+      background: #fee4e2;
+      color: var(--danger);
+    }
+
+    .trace-error {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #fff;
+      color: var(--danger);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .trace-hint {
+      margin-top: 9px;
+      padding: 9px 10px;
+      border-radius: 8px;
+      background: #eff8ff;
+      color: #1849a9;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .state-inspector {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .state-card {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid #b2ddff;
+      border-radius: 10px;
+      background: #f5faff;
+    }
+
+    .state-card h4 {
+      margin: 0 0 8px;
+      color: #1849a9;
+      font-size: 13px;
+    }
+
+    .state-card p {
+      color: #344054;
+      font-size: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .state-card.full {
+      grid-column: 1 / -1;
+    }
+
+    .state-flow-row {
+      margin-top: 8px;
+      padding: 9px;
+      border-left: 4px solid #2e90fa;
+      border-radius: 7px;
+      background: #fff;
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .state-flow-row strong {
+      color: #175cd3;
+    }
+
     @media (max-width: 780px) {
       .layout {
         grid-template-columns: 1fr;
@@ -426,18 +569,28 @@
         grid-template-columns: 1fr;
       }
 
-      .session-row {
+      .trace-dashboard {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .state-inspector {
         grid-template-columns: 1fr;
       }
+
+      .state-card.full {
+        grid-column: auto;
+      }
+
     }
   </style>
 </head>
 <body>
   <main>
     <header>
-      <h1>1차 의도분류 테스트 · SSE 답변 스트리밍</h1>
+      <h1>SC AX 입력→출력 개발 추적 콘솔</h1>
       <p>
-        삼성카드 영업지점 AX 모집인 의도분류 테스트.
+        실제 Python 함수 실행 순서, 중간 결과, 가드레일, SSE 출력과 오류 코드를
+        한 요청 안에서 추적합니다.
       </p>
       <div class="meta" id="metadata"></div>
     </header>
@@ -518,7 +671,7 @@
       </section>
 
       <section class="panel">
-        <h2>스트리밍 결과</h2>
+        <h2>실시간 응답 · 백엔드 실행 추적</h2>
         <div id="result">
           <div class="result-empty">
             왼쪽에 질문을 입력하고<br>의도분류 실행 버튼을 누르세요.
@@ -526,28 +679,13 @@
         </div>
       </section>
 
-      <section class="panel session-manager">
-        <div class="manager-header">
-          <div>
-            <h2>프로젝트 전체 대화 관리</h2>
-            <p id="session-summary">
-              acqsc 프로젝트의 session_id를 조회합니다.
-            </p>
-          </div>
-          <button class="secondary" id="refresh-sessions" type="button">
-            목록 새로고침
-          </button>
-        </div>
-        <div class="session-list" id="session-list">
-          <div class="result-empty">대화 목록을 불러오는 중입니다.</div>
-        </div>
-      </section>
     </div>
   </main>
 
   <script>
     // 페이지를 FastAPI의 /tester에서 열면 같은 origin의 API를 호출하므로
     // 별도의 CORS 설정이나 API 주소 입력이 필요 없다.
+    const TESTER_BOOTSTRAP = __SC_AX_TESTER_BOOTSTRAP__;
     const form = document.querySelector("#chat-form");
     const accessTokenInput = document.querySelector("#access-token");
     const employeeInput = document.querySelector("#employee-id");
@@ -561,26 +699,24 @@
     const resetButton = document.querySelector("#reset-button");
     const resultBox = document.querySelector("#result");
     const metadataBox = document.querySelector("#metadata");
-    const sessionList = document.querySelector("#session-list");
-    const sessionSummary = document.querySelector("#session-summary");
-    const refreshSessionsButton =
-      document.querySelector("#refresh-sessions");
-
     let waitingThreadId = null;
-    let lastResponse = null;
     let lastAction = null;
     let streamState = null;
+    let pendingRecommendationId = null;
 
     // 간결한 SSE에는 내부 분류 메타데이터를 넣지 않는다. 목업에서는 수신한
     // 이벤트가 어느 코드에서 만들어졌는지 아래 표로 표시하고, 마스터 분류부터
     // MCP 결과까지의 상세 실행은 같은 request_id가 붙은 서버 로그로 확인한다.
     const EVENT_CODE_LOCATIONS = {
+      http: "브라우저 fetch() → POST /chat 응답 헤더",
+      trace: "X-Debug-Trace로 활성화된 실제 Python 함수 실행 이벤트",
       request_id: "app/api.py → create_app.stream_chat() → event_stream()",
       session_id: "app/api.py → create_app.stream_chat() → event_stream()",
       thread_id: "app/api.py → create_app.stream_chat() → event_stream()",
       messages: "app/api.py → create_app.stream_chat() → event_stream()",
       sourceDocuments: "app/answers.py → DefaultAnswerService.prepare() / _stream_rag()",
       token: "app/answers.py → DefaultAnswerService 또는 _stream_fixed()",
+      recommendedQuestions: "app/recommended_questions.py → RecommendedQuestionRegistry.for_subagent()",
       action: "app/streaming.py → build_action_event()",
       duration: "app/api.py → create_app.stream_chat() → event_stream()",
       end: "app/api.py → create_app.stream_chat() → event_stream()",
@@ -588,19 +724,24 @@
     };
 
     const BACKEND_PIPELINE = [
-      "1. app/models.py → StreamingChatRequest: 최종 입력값 검증",
-      "2. app/api.py → create_app.stream_chat(): 인증·ID·에이전트 검증",
-      "3. app/graph.py → MasterIntentGraph.start()/resume(): LangGraph 실행",
-      "4. app/graph.py → _load_history(): Redis 멀티턴 이력 조회",
-      "5. app/graph.py → _classify_intent(): 마스터 의도분류",
-      "6. app/classifier.py → GenOSIntentClassifier.classify(): GenOS LLM 호출",
-      "7. app/graph.py → _verify_selection(): 프론트/LLM 에이전트 비교",
-      "8. app/graph.py → _run_subagent(): 서브에이전트 시나리오 분류",
-      "9. app/subagents/router.py → ScenarioSubagent.classify(): 시나리오 LLM 호출",
-      "10. app/graph.py → _call_mcp(): 시나리오별 MCP 실행",
-      "11. app/mcp/client.py → ManifestMcpToolExecutor.execute(): GenOS MCP 호출",
-      "12. app/answers.py → DefaultAnswerService.prepare(): 고정/RAG 답변 선택",
-      "13. app/api.py → event_stream(): SSE 전송 및 assistant Redis 저장",
+      "1. app/models.py → StreamingChatRequest / normalize_json_request_body: 입력 envelope·필드 검증",
+      "2. app/api.py → create_app.stream_chat(): 인증·ID·endpoint·agent_code 정규화",
+      "3. app/guardrail.py → BastionGuardianClient.process_text(INPUT): 입력 PASS/MASK/BLOCK",
+      "4. app/graph.py → MasterIntentGraph.start()/resume(): 신규/HITL 진입",
+      "5. app/graph.py → _load_history(): Redis/메모리 멀티턴 이력 조회",
+      "6. app/graph.py → _classify_intent(): 마스터 의도분류 노드",
+      "7. app/classifier.py → GenOSIntentClassifier.classify(): GenOS LLM 호출·결과 파싱",
+      "8. app/graph.py → _verify_selection()/HITL 검증 함수: 사용자 확인 분기",
+      "9. app/graph.py → _run_subagent(): 서브에이전트 시나리오 실행",
+      "10. app/subagents/router.py → ScenarioSubagent.classify(): 세부 시나리오·파라미터 분류",
+      "11. app/graph.py → _call_mcp(): 시나리오별 도구 선택·HITL 파라미터 처리",
+      "12. app/mcp/scenarios/<agent>.py → scenario handler: MCP tool_name·arguments·호출 순서 커스터마이징",
+      "13. app/mcp/request_builder.py → build_mcp_workflow_step_request(): 공통 JSON-RPC 요청 생성",
+      "14. app/mcp/client.py → GenosMcpToolExecutor.execute() / _parse_mcp_response(): 호출·운영 결과 파싱",
+      "15. app/answers.py → DefaultAnswerService.prepare(): 고정/RAG 답변·출처·renderable 구성",
+      "16. app/api.py → _guard_markdown_tables() / _guard_output_text(): 표·문장 OUTPUT 가드레일",
+      "17. app/recommended_questions.py → RecommendedQuestionRegistry: 추천질문 선택",
+      "18. app/api.py → event_stream(): token/messages/action/end SSE 및 assistant 이력 저장",
     ];
 
     function escapeHtml(value) {
@@ -671,6 +812,29 @@
       `;
     }
 
+    function renderRecommendedQuestions(items) {
+      if (!Array.isArray(items) || !items.length) return "";
+      const buttons = items.map((item, index) => `
+        <button
+          class="recommended-question"
+          type="button"
+          data-recommended-question-index="${index}"
+          title="${escapeHtml(item?.detailScenarioCode ?? "")}">
+          ${escapeHtml(
+            item?.interactionType === "confirmation"
+              ? `진행 · ${item?.question ?? ""}`
+              : item?.question ?? "",
+          )}
+        </button>
+      `).join("");
+      return `
+        <section class="recommended-questions">
+          <h4>추천 질문</h4>
+          <div class="recommended-question-list">${buttons}</div>
+        </section>
+      `;
+    }
+
     function setLoading(isLoading, label = "처리 중...") {
       submitButton.disabled = isLoading;
       resetButton.disabled = isLoading;
@@ -688,8 +852,18 @@
           "Authorization": authorization,
           "Content-Type": "application/json",
           "Accept": "text/event-stream",
+          "X-Debug-Trace": "true",
         },
         body: JSON.stringify(body),
+      });
+      onEvent({
+        event: "http",
+        data: {
+          status: response.status,
+          statusText: response.statusText,
+          contentType: response.headers.get("content-type"),
+          requestUrl: response.url,
+        },
       });
       if (!response.ok) {
         const raw = await response.text();
@@ -733,7 +907,7 @@
       }
     }
 
-    function initializeStreamState() {
+    function initializeStreamState(requestPayload = null) {
       streamState = {
         requestId: null,
         sessionId: sessionInput.value.trim(),
@@ -742,8 +916,12 @@
         status: "STREAMING",
         duration: null,
         sourceDocuments: [],
+        recommendedQuestions: [],
         messages: [],
         action: null,
+        requestPayload,
+        http: null,
+        traces: [],
         currentCodeLocation: "요청 전",
         executionTrace: [],
         events: [],
@@ -757,19 +935,37 @@
       if (!streamState) initializeStreamState();
       streamState.events.push(envelope);
       const {event, data} = envelope;
-      streamState.currentCodeLocation =
-        EVENT_CODE_LOCATIONS[event] ?? "알 수 없는 이벤트 위치";
+      const traceSource = data?.source;
+      streamState.currentCodeLocation = event === "trace"
+        ? `${traceSource?.file ?? "알 수 없는 파일"}${
+            traceSource?.line ? `:${traceSource.line}` : ""
+          } → ${traceSource?.function ?? "알 수 없는 함수"}`
+        : EVENT_CODE_LOCATIONS[event] ?? "알 수 없는 이벤트 위치";
       streamState.executionTrace.push({
         order: streamState.executionTrace.length + 1,
         event,
         code: streamState.currentCodeLocation,
       });
+      if (event === "http") streamState.http = data;
+      if (event === "trace") {
+        streamState.traces.push(data ?? {});
+        if (["FAILED", "STOPPED"].includes(data?.phase)) {
+          streamState.status = "ERROR";
+          streamState.error = data?.error ?? {
+            code: "TRACE_STAGE_FAILED",
+            message: `${data?.stage ?? "알 수 없는 단계"} 실패`,
+          };
+        }
+      }
       if (event === "request_id") streamState.requestId = data;
       if (event === "session_id") streamState.sessionId = data;
       if (event === "thread_id") streamState.threadId = data;
       if (event === "messages") streamState.messages = data ?? [];
       if (event === "token") streamState.answer += data;
       if (event === "sourceDocuments") streamState.sourceDocuments = data ?? [];
+      if (event === "recommendedQuestions") {
+        streamState.recommendedQuestions = Array.isArray(data) ? data : [];
+      }
       if (event === "action") {
         streamState.action = data;
         streamState.status = "INPUT_REQUIRED";
@@ -785,6 +981,191 @@
       renderStreamState();
     }
 
+    function renderTraceTimeline(traces) {
+      if (!Array.isArray(traces) || !traces.length) {
+        return `<div class="result-empty">Python 단계 trace 수신 대기 중...</div>`;
+      }
+      return traces.map((trace) => {
+        const phase = String(trace?.phase ?? "UNKNOWN").toLowerCase();
+        const source = trace?.source ?? {};
+        const sourceText = `${source.file ?? "unknown.py"}${
+          source.line ? `:${source.line}` : ""
+        } → ${source.function ?? "unknown"}`;
+        const error = trace?.error;
+        const details = trace?.details;
+        return `
+          <article class="trace-stage ${escapeHtml(phase)}">
+            <div class="trace-stage-header">
+              <div>
+                <div class="trace-stage-title">
+                  #${escapeHtml(trace?.sequence ?? "-")} ·
+                  ${escapeHtml(trace?.stage ?? trace?.stageCode ?? "알 수 없는 단계")}
+                </div>
+                <div class="trace-stage-meta">
+                  ${escapeHtml(sourceText)}<br>
+                  code=${escapeHtml(trace?.stageCode ?? "-")} ·
+                  +${escapeHtml(trace?.offsetMs ?? 0)}ms ·
+                  duration=${escapeHtml(trace?.durationMs ?? 0)}ms
+                </div>
+              </div>
+              <span class="trace-phase">${escapeHtml(trace?.phase ?? "UNKNOWN")}</span>
+            </div>
+            ${error ? `
+              <div class="trace-error">
+                <strong>오류 코드: ${escapeHtml(error.code ?? "UNKNOWN_ERROR")}</strong><br>
+                ${escapeHtml(error.type ?? "Error")}: ${escapeHtml(error.message ?? "")}
+                ${error.rootType ? `<br>근본 원인: ${escapeHtml(error.rootType)} · ${escapeHtml(error.rootMessage ?? "")}` : ""}
+              </div>` : ""}
+            ${trace?.customizationHint ? `
+              <div class="trace-hint"><strong>수정 안내</strong><br>${escapeHtml(trace.customizationHint)}</div>
+            ` : ""}
+            ${details !== undefined ? `
+              <details ${error ? "open" : ""}>
+                <summary>이 단계의 입력·출력 요약</summary>
+                <pre>${formatJson(details)}</pre>
+              </details>` : ""}
+          </article>
+        `;
+      }).join("");
+    }
+
+    function latestStateFocus(stateTraces, key) {
+      for (let index = stateTraces.length - 1; index >= 0; index -= 1) {
+        const value = stateTraces[index]?.details?.focus?.[key];
+        if (value !== undefined && value !== null) {
+          if (!Array.isArray(value) || value.length) return value;
+          if (Array.isArray(value) && value.length) return value;
+        }
+      }
+      return Array.isArray(stateTraces.at(-1)?.details?.focus?.[key]) ? [] : null;
+    }
+
+    function renderStateInspector(traces) {
+      const stateTraces = (traces ?? []).filter(
+        (trace) => trace?.kind === "state_transition",
+      );
+      if (!stateTraces.length) {
+        return `<div class="result-empty">LangGraph state snapshot 수신 대기 중...</div>`;
+      }
+      const originalQuestion = latestStateFocus(stateTraces, "originalQuestion");
+      const history = latestStateFocus(stateTraces, "conversationHistory") ?? [];
+      const refinedQuestion = latestStateFocus(stateTraces, "refinedQuestion");
+      const classification = latestStateFocus(stateTraces, "classification");
+      const scenarios = latestStateFocus(stateTraces, "scenarioMatches") ?? [];
+      const extracted = latestStateFocus(stateTraces, "extractedParameters") ?? [];
+      const mcpRequests = latestStateFocus(stateTraces, "mcpRequests") ?? [];
+      const workflowResults =
+        latestStateFocus(stateTraces, "mcpWorkflowResults") ?? [];
+      const workflowMapping =
+        latestStateFocus(stateTraces, "mcpWorkflowMapping");
+      const handlerTrace = latestStateFocus(stateTraces, "mcpHandlerTrace");
+      const outputTrace = latestStateFocus(stateTraces, "mcpOutputTrace");
+      const mcpResults = latestStateFocus(stateTraces, "mcpResults") ?? [];
+      const workflow = workflowResults.length
+        ? workflowResults.map((step) => {
+          const repeatLabel = step.isAggregate
+            ? "FAN-IN 집계"
+            : step.executionMode === "mapped"
+              ? `MAPPER ${Number(step.itemIndex ?? 0) + 1}/${escapeHtml(step.itemCount ?? "-")}`
+              : step.executionMode === "for_each"
+                ? `ITEM ${Number(step.itemIndex ?? 0) + 1}/${escapeHtml(step.itemCount ?? "-")}`
+                : step.executionMode === "function_many"
+                  ? `FUNCTION ITEM ${Number(step.itemIndex ?? 0) + 1}/${escapeHtml(step.itemCount ?? "-")}`
+                  : step.executionMode === "pagination"
+                    ? `PAGE ${Number(step.itemIndex ?? 0) + 1}`
+                    : step.executionMode === "function"
+                      ? "FUNCTION"
+                      : "SINGLE";
+          return `
+          <div class="state-flow-row">
+            <strong>STEP ${Number(step.stepIndex ?? 0) + 1}/${escapeHtml(step.stepCount ?? "-")} · ${escapeHtml(step.stepCode ?? "-")} · ${repeatLabel}</strong><br>
+            tool=${escapeHtml(step.toolName ?? "-")} · requestId=${escapeHtml(step.requestId ?? "-")}<br>
+            mode=${escapeHtml(step.executionMode ?? "single")} · handler=${escapeHtml(step.handlerCode ?? "-")} · mapper=${escapeHtml(step.inputMapper ?? "-")} · source=${escapeHtml(step.sourceStepCode ?? "-")} · outcome=${escapeHtml(step.outcome ?? "-")} · final=${escapeHtml(step.isFinal ?? false)} · aggregate=${escapeHtml(step.isAggregate ?? false)}
+            <details open><summary>이 step의 MCP arguments</summary><pre>${formatJson(step.arguments)}</pre></details>
+            <details><summary>이 step의 raw result</summary><pre>${formatJson(step.rawResult)}</pre></details>
+            <details><summary>이 step의 정제 결과·오류</summary><pre>${formatJson({
+              formattedResult: step.formattedResult,
+              error: step.error,
+            })}</pre></details>
+          </div>`;
+        }).join("")
+        : `<div class="result-empty">MCP workflow step 실행 전입니다.</div>`;
+      const flow = stateTraces.map((trace) => {
+        const focus = trace?.details?.focus ?? {};
+        const changedSummary = [
+          focus.refinedQuestion ? `보정질문=${focus.refinedQuestion}` : null,
+          focus.classification?.agent_code
+            ? `agent=${focus.classification.agent_code}`
+            : null,
+          focus.scenarioMatches?.length
+            ? `scenario=${focus.scenarioMatches.map((item) => item.detailScenarioCode).join(",")}`
+            : null,
+          focus.mcpRequests?.length
+            ? `mcp=${focus.mcpRequests.map((item) => item.toolName).join(",")}`
+            : null,
+          focus.mcpWorkflowResults?.length
+            ? `step=${focus.mcpWorkflowResults.at(-1)?.stepCode}`
+            : null,
+          focus.mcpWorkflowMapping?.inputMapper
+            ? `mapper=${focus.mcpWorkflowMapping.inputMapper}`
+            : null,
+          focus.mcpHandlerTrace?.handlerCode
+            ? `handler=${focus.mcpHandlerTrace.handlerCode}`
+            : null,
+          focus.mcpOutputTrace?.outputHandlerCode
+            ? `output=${focus.mcpOutputTrace.outputHandlerCode}`
+            : null,
+          focus.status ? `status=${focus.status}` : null,
+        ].filter(Boolean).join(" · ") || "state 기록";
+        return `
+          <div class="state-flow-row">
+            <strong>#${escapeHtml(trace.sequence)} ${escapeHtml(trace.stage)}</strong><br>
+            ${escapeHtml(changedSummary)}<br>
+            <span class="trace-stage-meta">keys=${escapeHtml((trace?.details?.stateKeys ?? []).join(", "))}</span>
+            <details>
+              <summary>이 단계의 전체 state snapshot</summary>
+              <pre>${formatJson(trace?.details?.state ?? {})}</pre>
+            </details>
+          </div>`;
+      }).join("");
+      return `
+        <div class="state-inspector">
+          <article class="state-card">
+            <h4>① 원본 질문 → 보정 질문</h4>
+            <p>원본: ${escapeHtml(originalQuestion ?? "아직 없음")}\n보정: ${escapeHtml(refinedQuestion ?? "분류 전")}</p>
+            <details><summary>마스터 분류 전체</summary><pre>${formatJson(classification)}</pre></details>
+          </article>
+          <article class="state-card">
+            <h4>② 조회한 대화이력 (${history.length}개)</h4>
+            <p>동일 사원·session·agent 범위에서 분류에 전달된 실제 이력입니다.</p>
+            <details open><summary>대화이력 전체</summary><pre>${formatJson(history)}</pre></details>
+          </article>
+          <article class="state-card">
+            <h4>③ 세부 시나리오·추출 파라미터</h4>
+            <details open><summary>scenario matches</summary><pre>${formatJson(scenarios)}</pre></details>
+            <details open><summary>extracted parameters</summary><pre>${formatJson(extracted)}</pre></details>
+          </article>
+          <article class="state-card">
+            <h4>④ 순차 MCP workflow 실행</h4>
+            <p>도구명·arguments·반복·후속 호출은 handlerCode, 원본 결과 파싱·전처리 data·표/문장은 outputHandlerCode의 함수에서 수정합니다.</p>
+            <details open><summary>최근 함수형 handler 결정·페이지 판정</summary><pre>${formatJson(handlerTrace)}</pre></details>
+            <details open><summary>최근 결과 전처리·출력 함수</summary><pre>${formatJson(outputTrace)}</pre></details>
+            <details open><summary>최근 input mapper 결정</summary><pre>${formatJson(workflowMapping)}</pre></details>
+            ${workflow}
+            <details><summary>전체 MCP requests</summary><pre>${formatJson(mcpRequests)}</pre></details>
+          </article>
+          <article class="state-card">
+            <h4>⑤ 시나리오별 최종 MCP 결과</h4>
+            <p>답변 조립에는 세부 시나리오당 이 terminal 결과 하나만 사용됩니다.</p>
+            <details open><summary>최종 raw/정제 결과</summary><pre>${formatJson(mcpResults)}</pre></details>
+          </article>
+          <article class="state-card full">
+            <h4>⑥ LangGraph state 이동 순서</h4>
+            ${flow}
+          </article>
+        </div>`;
+    }
+
     function renderStreamState() {
       if (!streamState) return;
       const statusClass = streamState.status.toLowerCase().replaceAll("_", "-");
@@ -792,6 +1173,20 @@
         .reverse()
         .find((message) => message?.role === "assistant");
       const renderables = assistantMessage?.metadata?.renderables ?? [];
+      const metadataRecommendedQuestions =
+        assistantMessage?.metadata?.recommendedQuestions;
+      const recommendedQuestions = streamState.recommendedQuestions.length
+        ? streamState.recommendedQuestions
+        : Array.isArray(metadataRecommendedQuestions)
+          ? metadataRecommendedQuestions
+          : [];
+      streamState.recommendedQuestions = recommendedQuestions;
+      const failedTraceCount = streamState.traces.filter(
+        (trace) => ["FAILED", "STOPPED"].includes(trace?.phase),
+      ).length;
+      const completedTraceCount = streamState.traces.filter(
+        (trace) => trace?.phase === "COMPLETED",
+      ).length;
       let html = `
         <span class="status ${escapeHtml(statusClass)}">${escapeHtml(streamState.status)}</span>
         <dl>
@@ -804,9 +1199,19 @@
               ? `${Number(streamState.duration.seconds).toFixed(3)}초`
               : "처리 중",
           )}</dd>
+          <dt>HTTP 응답</dt><dd>${escapeHtml(
+            streamState.http
+              ? `${streamState.http.status} · ${streamState.http.contentType ?? "-"}`
+              : "응답 대기 중",
+          )}</dd>
         </dl>
+        <details open>
+          <summary>프론트 → POST /chat 요청 payload</summary>
+          <pre>${formatJson(streamState.requestPayload)}</pre>
+        </details>
         <div class="stream-answer">${escapeHtml(streamState.answer || "답변 token 수신 대기 중...")}</div>
         ${renderMessageRenderables(renderables)}
+        ${renderRecommendedQuestions(recommendedQuestions)}
       `;
 
       if (streamState.sourceDocuments.length) {
@@ -830,6 +1235,10 @@
                 data-action-code="${escapeHtml(input.code)}"
                 type="${escapeHtml(input.type ?? "text")}"
                 ${input.required ? "required" : ""}
+                ${input.pattern ? `pattern="${escapeHtml(input.pattern)}"` : ""}
+                ${input.minLength ? `minlength="${Number(input.minLength)}"` : ""}
+                ${input.maxLength ? `maxlength="${Number(input.maxLength)}"` : ""}
+                ${input.sensitive ? 'autocomplete="off"' : ""}
                 placeholder="${escapeHtml(input.label ?? "값을 입력하세요")}">
             `;
           },
@@ -850,393 +1259,92 @@
           </div>`;
       }
       if (streamState.error) {
-        html += `<p class="error-message">${escapeHtml(streamState.error.message)}</p>`;
+        html += `<p class="error-message"><strong>${escapeHtml(
+          streamState.error.code ?? "ERROR",
+        )}</strong> · ${escapeHtml(streamState.error.message)}</p>`;
       }
       html += `
         <details open>
-          <summary>백엔드 실행 위치 추적</summary>
-          <p style="margin-top: 10px">
-            실제 분류·파라미터·MCP 결과는 터미널에서 위 Request ID로 검색하세요.
-          </p>
+          <summary>LangGraph state · 보정 질문 · 대화이력 · MCP 데이터</summary>
+          ${renderStateInspector(streamState.traces)}
+        </details>
+        <details open>
+          <summary>실제 Python 실행 단계 타임라인</summary>
+          <div class="trace-dashboard">
+            <div class="trace-metric"><span>전체 trace</span><strong>${streamState.traces.length}</strong></div>
+            <div class="trace-metric"><span>완료 함수</span><strong>${completedTraceCount}</strong></div>
+            <div class="trace-metric"><span>실패/중단</span><strong>${failedTraceCount}</strong></div>
+            <div class="trace-metric"><span>전체 SSE</span><strong>${streamState.events.length}</strong></div>
+          </div>
+          <div class="trace-timeline">${renderTraceTimeline(streamState.traces)}</div>
+        </details>
+        <details>
+          <summary>전체 백엔드 수정 지점 지도</summary>
           <pre>${escapeHtml(BACKEND_PIPELINE.join("\n"))}</pre>
-          <details>
-            <summary>현재 요청의 SSE 코드 위치 순서</summary>
-            <pre>${formatJson(streamState.executionTrace)}</pre>
-          </details>
+        </details>
+        <details>
+          <summary>SSE 이벤트 → 생성 코드 위치 순서</summary>
+          <pre>${formatJson(streamState.executionTrace)}</pre>
         </details>`;
       html += `<details><summary>수신한 SSE 이벤트 전체 보기</summary><pre class="stream-events">${formatJson(streamState.events)}</pre></details>`;
       resultBox.innerHTML = html;
       document.querySelector("#approve-button")?.addEventListener("click", approveHitl);
-    }
-
-    async function requestJson(path, body, method) {
-      const options = {
-        headers: { "Content-Type": "application/json" },
-      };
-      if (method) {
-        options.method = method;
-      }
-      if (body !== undefined) {
-        options.method = method ?? "POST";
-        options.body = JSON.stringify(body);
-      }
-
-      const response = await fetch(path, options);
-      const data = await response.json();
-      if (!response.ok) {
-        const error = new Error(`HTTP ${response.status}`);
-        error.status = response.status;
-        error.payload = data;
-        throw error;
-      }
-      return data;
-    }
-
-    async function loadMetadata() {
-      try {
-        // 앞의 슬래시를 사용하지 않아 로컬에서는 /v1/metadata로,
-        // GenOS 코드 서빙에서는 /api/gateway/code_serving/{id}/v1/metadata로
-        // 현재 gateway prefix를 유지한 채 요청한다.
-        const metadata = await requestJson("v1/metadata");
-        agentSelect.innerHTML = [
-          '<option value="">선택하지 않음 (마스터 분류로 바로 진행)</option>',
-          ...metadata.agent_codes.map(
-            (code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)}</option>`,
-          ),
-        ].join("");
-        metadataBox.innerHTML = [
-          `프롬프트 ${metadata.prompt_version}`,
-          `이력 ${metadata.chat_history_store}`,
-          `HITL ${metadata.hitl_state_store}`,
-          `MCP ${metadata.mcp_backend}`,
-          `서브에이전트 ${
-            metadata.subagent_codes.length
-              ? metadata.subagent_codes.join(", ")
-              : "없음"
-          }`,
-        ]
-          .map((text) => `<span class="chip">${escapeHtml(text)}</span>`)
-          .join("");
-        await loadSessionList();
-      } catch (error) {
-        agentSelect.innerHTML = '<option value="">메타데이터 조회 실패</option>';
-        renderError(error);
-      }
-    }
-
-    async function loadSessionList() {
-      sessionList.innerHTML =
-        '<div class="result-empty">대화 목록을 불러오는 중입니다.</div>';
-      try {
-        const data = await requestJson("v1/tester/sessions");
-        sessionSummary.textContent =
-          `${data.project_code} 프로젝트 · ${data.backend} 저장소 · ` +
-          `${data.count}개 대화`;
-        if (!data.sessions.length) {
-          sessionList.innerHTML =
-            '<div class="result-empty">저장된 대화가 없습니다.</div>';
-          return;
-        }
-
-        sessionList.innerHTML = data.sessions
-          .map((session) => {
-            const agentCounts = Object.entries(session.agent_counts ?? {})
-              .map(([code, count]) => `${code}: ${count}`)
-              .join(", ");
-            return `
-              <div class="session-row">
-                <span><strong>${escapeHtml(session.employee_id)}</strong></span>
-                <span>${escapeHtml(session.session_id)}</span>
-                <span>
-                  ${escapeHtml(agentCounts || "-")}
-                  · 총 ${escapeHtml(session.message_count)}건
-                </span>
-                <button
-                  class="danger delete-session"
-                  type="button"
-                  data-employee-id="${escapeHtml(session.employee_id)}"
-                  data-session-id="${escapeHtml(session.session_id)}"
-                >
-                  삭제
-                </button>
-              </div>
-            `;
-          })
-          .join("");
-
-        document.querySelectorAll(".delete-session").forEach((button) => {
-          button.addEventListener("click", () => deleteSession(button));
+      document.querySelectorAll("[data-recommended-question-index]")
+        .forEach((button) => {
+          button.addEventListener("click", () => {
+            if (submitButton.disabled) return;
+            const index = Number(button.dataset.recommendedQuestionIndex);
+            const item = streamState?.recommendedQuestions?.[index];
+            const isConfirmation = item?.interactionType === "confirmation";
+            const followupMessage = item?.affirmativeFollowup?.message;
+            const message = isConfirmation && typeof followupMessage === "string"
+              ? followupMessage
+              : item?.question;
+            if (typeof message !== "string" || !message.trim()) return;
+            pendingRecommendationId = isConfirmation ? item.id : null;
+            messageInput.value = message;
+            messageInput.focus();
+            form.requestSubmit();
+          });
         });
-      } catch (error) {
-        sessionList.innerHTML = `
-          <p class="error-message">전체 대화 목록 조회에 실패했습니다.</p>
-          <pre>${formatJson(error.payload ?? { message: error.message })}</pre>
-        `;
-      }
     }
 
-    async function deleteSession(button) {
-      const employeeId = button.dataset.employeeId;
-      const sessionId = button.dataset.sessionId;
-      const confirmed = window.confirm(
-        `${employeeId} 사원의 대화 '${sessionId}'에 속한 ` +
-        "모든 에이전트 이력을 삭제하시겠습니까?",
-      );
-      if (!confirmed) {
-        return;
-      }
-
-      button.disabled = true;
-      button.textContent = "삭제 중...";
-      const parameters = new URLSearchParams({
-        employee_id: employeeId,
-        session_id: sessionId,
-      });
-      try {
-        const result = await requestJson(
-          `v1/tester/sessions?${parameters.toString()}`,
-          undefined,
-          "DELETE",
-        );
-        if (
-          employeeInput.value.trim() === employeeId
-          && sessionInput.value.trim() === sessionId
-        ) {
-          resultBox.innerHTML = `
-            <div class="result-empty">
-              현재 대화의 이력
-              ${escapeHtml(result.deleted_message_count)}건을 삭제했습니다.
-            </div>
-          `;
-        }
-        await loadSessionList();
-      } catch (error) {
-        button.disabled = false;
-        button.textContent = "삭제";
-        window.alert(`대화 삭제에 실패했습니다: ${error.message}`);
-      }
-    }
-
-    function renderResult(data) {
-      lastResponse = data;
-      waitingThreadId =
-        data.status === "INPUT_REQUIRED" ? data.thread_id : null;
-
-      const classification = data.classification ?? {};
-      const subagent = data.subagent;
-      const mcp = data.mcp;
-      const scenarioMatches = subagent?.matches?.length
-        ? subagent.matches
-        : (subagent ? [subagent] : []);
-      const mcpResults = data.mcp_results?.length
-        ? data.mcp_results
-        : (mcp ? [mcp] : []);
-      const statusClass = String(data.status)
-        .toLowerCase()
-        .replaceAll("_", "-");
-      const hitl = data.interrupt;
-
-      let html = `
-        <span class="status ${escapeHtml(statusClass)}">
-          ${escapeHtml(data.status)}
-        </span>
-        <dl>
-          <dt>분류 유형</dt>
-          <dd>${escapeHtml(classification.classification_type)}</dd>
-          <dt>분류 에이전트</dt>
-          <dd>${escapeHtml(classification.agent_code ?? "-")}</dd>
-          <dt>보정 질문</dt>
-          <dd>${escapeHtml(classification.refined_query)}</dd>
-          <dt>Thread ID</dt>
-          <dd>${escapeHtml(data.thread_id)}</dd>
-          <dt>Session ID</dt>
-          <dd>${escapeHtml(sessionInput.value.trim())}</dd>
-        </dl>
-      `;
-
-      if (subagent) {
-        const matchCards = scenarioMatches.map((match, index) => {
-          const parameterRows = Object.entries(match.parameters ?? {})
-            .map(
-              ([name, value]) => `
-                <dt>${escapeHtml(name)}</dt>
-                <dd>${escapeHtml(value ?? "null")}</dd>
-              `,
-            )
-            .join("");
-          return `
-            <div style="margin-top: ${index ? "16px" : "0"}">
-              <strong>매칭 ${index + 1}</strong>
-              <dl>
-                <dt>시나리오</dt>
-                <dd>${escapeHtml(match.scenario_name)} (${escapeHtml(match.scenario_code)})</dd>
-                <dt>세부 시나리오</dt>
-                <dd>${escapeHtml(match.detail_scenario_name)} (${escapeHtml(match.detail_scenario_code)})</dd>
-                ${parameterRows}
-              </dl>
-            </div>
-          `;
-        }).join("");
-        html += `
-          <div class="subagent">
-            <strong>${escapeHtml(subagent.agent_code)} 서브에이전트 결과 (${scenarioMatches.length}개)</strong>
-            <dl>
-              <dt>프롬프트 버전</dt>
-              <dd>${escapeHtml(subagent.prompt_version)}</dd>
-            </dl>
-            ${matchCards}
-          </div>
-        `;
-      }
-
-      if (mcpResults.length) {
-        const mcpCards = mcpResults.map((item, index) => `
-          <div style="margin-top: ${index ? "16px" : "0"}">
-            <strong>MCP ${index + 1}</strong>
-            <dl>
-              <dt>사용 도구</dt>
-              <dd>${escapeHtml(item.tool_name)}</dd>
-              <dt>추적 ID</dt>
-              <dd>${escapeHtml(item.request_id)}</dd>
-              <dt>백엔드</dt>
-              <dd>${escapeHtml(item.backend)}</dd>
-              <dt>성공 여부</dt>
-              <dd>${escapeHtml(item.succeeded)}</dd>
-            </dl>
-            <details>
-              <summary>MCP Payload와 structuredContent 원본 보기</summary>
-              <pre>${formatJson(item)}</pre>
-            </details>
-          </div>
-        `).join("");
-        html += `
-          <div class="mcp-result">
-            <strong>MCP 도구 호출 결과 (${mcpResults.length}개)</strong>
-            ${mcpCards}
-          </div>
-        `;
-      }
-
-      if (hitl) {
-        const context = hitl.context ?? {};
-        const errors = hitl.errors ?? {};
-        html += `
-          <div class="hitl">
-            <strong>${escapeHtml(hitl.type)}</strong>
-            <p>${escapeHtml(hitl.message)}</p>
-            <dl style="margin-top: 12px">
-              <dt>프론트 선택</dt>
-              <dd>${escapeHtml(context.frontend_agent_code ?? "-")}</dd>
-              <dt>LLM 분류</dt>
-              <dd>${escapeHtml(context.classified_agent_code ?? "-")}</dd>
-            </dl>
-            ${
-              Object.keys(errors).length
-                ? `<p class="error-message" style="margin-top: 10px">
-                    ${escapeHtml(Object.values(errors).join(", "))}
-                  </p>`
-                : ""
-            }
-            <div class="actions">
-              <button class="approve" id="approve-button" type="button">
-                LLM 분류 에이전트로 변경 승인
-              </button>
-            </div>
-          </div>
-        `;
-      }
-
-      html += `
-        <details id="history-details">
-          <summary>대화내역 보기</summary>
-          <div id="history-content">
-            펼치면 현재 사원번호·대화 ID·분류 에이전트의 이력을 조회합니다.
-          </div>
-        </details>
-        <details>
-          <summary>전체 JSON 보기</summary>
-          <pre>${formatJson(data)}</pre>
-        </details>
-      `;
-      resultBox.innerHTML = html;
-
-      const approveButton = document.querySelector("#approve-button");
-      if (approveButton) {
-        approveButton.addEventListener("click", approveHitl);
-      }
-
-      const historyDetails = document.querySelector("#history-details");
-      if (historyDetails) {
-        historyDetails.addEventListener("toggle", () => {
-          if (historyDetails.open) {
-            loadSessionHistory(classification.agent_code);
-          }
-        });
-      }
-    }
-
-    async function loadSessionHistory(classifiedAgentCode) {
-      const historyContent = document.querySelector("#history-content");
-      if (!historyContent) {
-        return;
-      }
-
-      // 프론트 미선택 또는 HITL 변경 후에도 실제 저장 범위인 마스터 분류
-      // agent_code를 사용한다. 따라서 다른 에이전트의 이력을 섞어 조회하지 않는다.
-      if (!classifiedAgentCode) {
-        historyContent.innerHTML =
-          '<p class="error-message">조회할 분류 에이전트가 없습니다.</p>';
-        return;
-      }
-
-      const parameters = new URLSearchParams({
-        employee_id: employeeInput.value.trim(),
-        session_id: sessionInput.value.trim(),
-        agent_code: classifiedAgentCode,
-      });
-      historyContent.innerHTML = "<p>대화이력을 조회하는 중입니다...</p>";
-
-      try {
-        const history = await requestJson(
-          `v1/tester/history?${parameters.toString()}`,
-        );
-        if (!history.messages.length) {
-          historyContent.innerHTML = `
-            <p>저장된 대화이력이 없습니다.</p>
-            <pre>${formatJson(history)}</pre>
-          `;
-          return;
-        }
-
-        const rows = history.messages
-          .map(
-            (message, index) => `
-              <dt>${index + 1}. ${escapeHtml(message.role)}</dt>
-              <dd>
-                ${escapeHtml(message.content)}
-                ${renderMessageRenderables(message?.metadata?.renderables ?? [])}
-              </dd>
-            `,
-          )
-          .join("");
-        historyContent.innerHTML = `
-          <dl>${rows}</dl>
-          <details>
-            <summary>대화이력 JSON 보기</summary>
-            <pre>${formatJson(history)}</pre>
-          </details>
-        `;
-      } catch (error) {
-        const payload = error.payload ?? { message: error.message };
-        historyContent.innerHTML = `
-          <p class="error-message">대화이력 조회에 실패했습니다.</p>
-          <pre>${formatJson(payload)}</pre>
-        `;
-      }
+    function loadMetadata() {
+      const metadata = TESTER_BOOTSTRAP;
+      agentSelect.innerHTML = [
+        '<option value="">선택하지 않음 (마스터 분류로 바로 진행)</option>',
+        ...metadata.agent_codes.map(
+          (code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)}</option>`,
+        ),
+      ].join("");
+      metadataBox.innerHTML = [
+        `프롬프트 ${metadata.prompt_version}`,
+        `이력 ${metadata.chat_history_store}`,
+        `HITL ${metadata.hitl_state_store}`,
+        `MCP ${metadata.mcp_backend}`,
+        `서브에이전트 ${
+          metadata.subagent_codes.length
+            ? metadata.subagent_codes.join(", ")
+            : "없음"
+        }`,
+      ]
+        .map((text) => `<span class="chip">${escapeHtml(text)}</span>`)
+        .join("");
     }
 
     function renderError(error) {
       const payload = error.payload ?? { message: error.message };
+      if (streamState) {
+        streamState.status = "ERROR";
+        streamState.error = {
+          code: `HTTP_${error.status ?? "CLIENT_ERROR"}`,
+          message: payload?.error?.message ?? payload?.message ?? error.message,
+          payload,
+        };
+        streamState.events.push({event: "clientError", data: streamState.error});
+        renderStreamState();
+        return;
+      }
       resultBox.innerHTML = `
         <span class="status error">ERROR</span>
         <p class="error-message">
@@ -1254,7 +1362,6 @@
       waitingThreadId = null;
       lastAction = null;
       setLoading(true, "스트리밍 수신 중...");
-      initializeStreamState();
 
       const request = {
         message: messageInput.value.trim(),
@@ -1262,6 +1369,7 @@
         thread_id: null,
         endpoint: endpointInput.value.trim() || null,
         agent_code: agentSelect.value || null,
+        recommendation_id: pendingRecommendationId,
         humanInput: [],
         user: {
           id: employeeInput.value.trim() || null,
@@ -1269,13 +1377,14 @@
           deptname: deptNameInput.value.trim() || null,
         },
       };
+      initializeStreamState(request);
+      pendingRecommendationId = null;
 
       try {
-        await requestStream("v1/chat/stream", request, handleStreamEvent);
+        await requestStream("chat", request, handleStreamEvent);
         if (streamState?.sessionId) {
           sessionInput.value = streamState.sessionId;
         }
-        await loadSessionList();
       } catch (error) {
         renderError(error);
       } finally {
@@ -1299,21 +1408,22 @@
           const value = element?.value ?? input.expectedValue ?? "";
           return {code: input.code, input: value};
         });
-        initializeStreamState();
-        await requestStream("v1/chat/stream", {
+        const resumeRequest = {
           message: "요청한 추가 입력값을 전달합니다.",
           session_id: sessionInput.value.trim(),
           thread_id: resumeThreadId,
           endpoint: endpointInput.value.trim() || null,
           agent_code: agentSelect.value || null,
+          recommendation_id: null,
           humanInput,
           user: {
             id: employeeInput.value.trim() || null,
             deptcode: deptCodeInput.value.trim() || null,
             deptname: deptNameInput.value.trim() || null,
           },
-        }, handleStreamEvent);
-        await loadSessionList();
+        };
+        initializeStreamState(resumeRequest);
+        await requestStream("chat", resumeRequest, handleStreamEvent);
       } catch (error) {
         renderError(error);
       }
@@ -1321,7 +1431,7 @@
 
     function resetForm() {
       waitingThreadId = null;
-      lastResponse = null;
+      pendingRecommendationId = null;
       messageInput.value = "";
       resultBox.innerHTML = `
         <div class="result-empty">
@@ -1334,10 +1444,6 @@
 
     form.addEventListener("submit", submitQuestion);
     resetButton.addEventListener("click", resetForm);
-    refreshSessionsButton.addEventListener(
-      "click",
-      loadSessionList,
-    );
     loadMetadata();
   </script>
 </body>

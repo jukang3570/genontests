@@ -10,7 +10,6 @@ from app.observability import logger, timed
 # LLM 호출 상한 기본값. 응답이 끝나지 않는 구조화 출력을 끊기 위한 값이며
 # 필드 기본값과 환경변수 기본값이 어긋나지 않도록 한 곳에서만 정의한다.
 DEFAULT_LLM_TIMEOUT_SECONDS = 60.0
-DEFAULT_LLM_MAX_RETRIES = 1
 # 서브에이전트는 세부 시나리오 수만큼 matches 배열을 반환할 수 있고 사고 과정
 # 토큰도 함께 소비한다. 정상 최대 출력의 두 배 이상으로 잡아, 이 값을 넘기면
 # 유효한 응답이 아니라 반복 생성으로 보고 끊는다.
@@ -38,6 +37,8 @@ class Settings:
     # Redis List로 저장하는 대화 이력의 유효시간이다. 메시지가 새로 저장될
     # 때마다 해당 사원·session·agent_code 이력 키의 TTL을 다시 갱신한다.
     redis_history_ttl_seconds: int = 3600
+    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
+    llm_max_tokens: int = DEFAULT_LLM_MAX_TOKENS
     # 현재는 최초 오류를 그대로 확인하기 위해 0으로 사용한다. 운영 정책이
     # 확정된 뒤 환경변수만 올리면 LangChain 내부 재시도를 활성화할 수 있다.
     llm_max_retries: int = 0
@@ -73,6 +74,14 @@ class Settings:
     # GenOS serving의 /v1 뒤에 붙는 경로다. 실제 배포 규격이 다르면 환경변수만
     # 바꿀 수 있도록 분리한다.
     reranking_endpoint_path: str = "rerank"
+    guardrail_base_url: str = "https://bastionguardian-api.startfort.io"
+    guardrail_endpoint_path: str = "/v1/huard/api"
+    guardrail_api_key: str | None = None
+    guardrail_timeout_seconds: float = 15.0
+    guardrail_fail_open: bool = False
+    # 개발 화면에서 고정 오류 문구 옆에 오류 코드·내용을 표시할지 결정한다.
+    # 운영에서는 반드시 false로 두고 상세 원인은 서버 로그에서만 확인한다.
+    response_error_details_enabled: bool = True
 
     @classmethod
     @timed("환경설정 불러오기")
@@ -83,32 +92,23 @@ class Settings:
         mcp_backend = os.getenv("MCP_BACKEND", "http").casefold()
         raw_mcp_id = os.getenv("MCP_ID", "").strip()
         if mcp_backend == "http" and not raw_mcp_id:
-            raise ValueError(
-                "MCP_BACKEND=http인 경우 환경변수 MCP_ID가 필요합니다."
-            )
+            raise ValueError("MCP_BACKEND=http인 경우 환경변수 MCP_ID가 필요합니다.")
         mcp_id = int(raw_mcp_id) if raw_mcp_id else None
         # 프로젝트 코드는 모든 Redis 키의 첫 번째 구간에 사용하므로
         # 구분자인 콜론이나 공백이 들어가지 않도록 제한한다.
         if not re.fullmatch(r"[a-z0-9_-]+", project_code):
             raise ValueError(
-                "PROJECT_CODE는 영문 소문자, 숫자, 밑줄, 하이픈만 "
-                "사용할 수 있습니다."
+                "PROJECT_CODE는 영문 소문자, 숫자, 밑줄, 하이픈만 사용할 수 있습니다."
             )
 
         settings = cls(
-            genos_url=os.getenv(
-                "GENOS_URL", "https://genos.genon.ai"
-            ).rstrip("/"),
+            genos_url=os.getenv("GENOS_URL", "https://genos.genon.ai").rstrip("/"),
             genos_serving_id=int(os.getenv("GENOS_SERVING_ID", "850")),
             genos_model=os.getenv("GENOS_MODEL", "qwen/qwen3.7-flash"),
             genos_bearer_token=os.getenv("GENOS_BEARER_TOKEN"),
             prompt_version=os.getenv("INTENT_PROMPT_VERSION"),
-            history_backend=os.getenv(
-                "CHAT_HISTORY_BACKEND", "empty"
-            ).casefold(),
-            redis_url=os.getenv(
-                "REDIS_URL", "redis://localhost:6379/0"
-            ),
+            history_backend=os.getenv("CHAT_HISTORY_BACKEND", "memory").casefold(),
+            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             redis_history_key_prefix=os.getenv(
                 "REDIS_HISTORY_KEY_PREFIX", "chat:history"
             ),
@@ -119,45 +119,52 @@ class Settings:
             redis_history_ttl_seconds=_positive_int_env(
                 "REDIS_HISTORY_TTL_SECONDS", 3600
             ),
+            llm_timeout_seconds=_positive_float_env(
+                "LLM_TIMEOUT_SECONDS", DEFAULT_LLM_TIMEOUT_SECONDS
+            ),
+            llm_max_tokens=_positive_int_env("LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS),
             llm_max_retries=_nonnegative_int_env("LLM_MAX_RETRIES", 0),
             project_code=project_code,
-            hitl_state_backend=os.getenv(
-                "HITL_STATE_BACKEND", "memory"
-            ).casefold(),
-            redis_hitl_key_prefix=os.getenv(
-                "REDIS_HITL_KEY_PREFIX", "hitl:state"
-            ),
-            redis_hitl_ttl_seconds=int(
-                os.getenv("REDIS_HITL_TTL_SECONDS", "3600")
-            ),
+            hitl_state_backend=os.getenv("HITL_STATE_BACKEND", "memory").casefold(),
+            redis_hitl_key_prefix=os.getenv("REDIS_HITL_KEY_PREFIX", "hitl:state"),
+            redis_hitl_ttl_seconds=int(os.getenv("REDIS_HITL_TTL_SECONDS", "3600")),
             mcp_backend=mcp_backend,
             mcp_id=mcp_id,
             mcp_bearer_token=os.getenv("MCP_BEARER_TOKEN"),
-            mcp_timeout_seconds=float(
-                os.getenv("MCP_TIMEOUT_SECONDS", "30")
-            ),
+            mcp_timeout_seconds=float(os.getenv("MCP_TIMEOUT_SECONDS", "30")),
             mcp_max_retries=_nonnegative_int_env("MCP_MAX_RETRIES", 0),
-            csv_trace_enabled=os.getenv(
-                "CSV_TRACE_ENABLED", "true"
-            ).strip().casefold() in {"1", "true", "yes", "on"},
-            csv_trace_dir=os.getenv(
-                "CSV_TRACE_DIR", "data/intent_traces"
-            ).strip(),
+            csv_trace_enabled=os.getenv("CSV_TRACE_ENABLED", "true").strip().casefold()
+            in {"1", "true", "yes", "on"},
+            csv_trace_dir=os.getenv("CSV_TRACE_DIR", "data/intent_traces").strip(),
             reranking_enabled=_bool_env("RERANKING_ENABLED", False),
-            reranking_serving_id=int(
-                os.getenv("RERANKING_SERVING_ID", "226")
-            ),
-            reranking_model=os.getenv(
-                "RERANKING_MODEL", "bge-reranker-v2-m3"
-            ).strip(),
+            reranking_serving_id=int(os.getenv("RERANKING_SERVING_ID", "226")),
+            reranking_model=os.getenv("RERANKING_MODEL", "bge-reranker-v2-m3").strip(),
             reranking_bearer_token=os.getenv("RERANKING_BEARER_TOKEN"),
             reranking_top_n=_positive_int_env("RERANKING_TOP_N", 5),
             reranking_timeout_seconds=float(
                 os.getenv("RERANKING_TIMEOUT_SECONDS", "30")
             ),
-            reranking_endpoint_path=os.getenv(
-                "RERANKING_ENDPOINT_PATH", "rerank"
-            ).strip().strip("/"),
+            reranking_endpoint_path=os.getenv("RERANKING_ENDPOINT_PATH", "rerank")
+            .strip()
+            .strip("/"),
+            guardrail_base_url=os.getenv(
+                "AI_GUARDRAIL_BASE_URL",
+                "https://bastionguardian-api.startfort.io",
+            ).rstrip("/"),
+            guardrail_endpoint_path=(
+                "/"
+                + os.getenv("AI_GUARDRAIL_ENDPOINT_PATH", "/v1/huard/api")
+                .strip()
+                .strip("/")
+            ),
+            guardrail_api_key=os.getenv("AI_GUARDRAIL_API_KEY", "").strip() or None,
+            guardrail_timeout_seconds=_positive_float_env(
+                "AI_GUARDRAIL_TIMEOUT_SECONDS", 15.0
+            ),
+            guardrail_fail_open=_bool_env("AI_GUARDRAIL_FAIL_OPEN", False),
+            response_error_details_enabled=_bool_env(
+                "RESPONSE_ERROR_DETAILS_ENABLED", True
+            ),
         )
         logger.info(
             "======== 환경설정 완료 | 프로젝트=%s | serving_id=%d | 모델=%s | "
@@ -166,7 +173,7 @@ class Settings:
             "HITL저장소=%s | HITL_TTL초=%d | MCP=%s | Reranking=%s | "
             "Reranking모델=%s | "
             "LLM자동재시도=%d회 | MCP자동재시도=%d회 | "
-            "Checkpointer=사용안함",
+            "오류상세노출=%s | Checkpointer=사용안함",
             settings.project_code,
             settings.genos_serving_id,
             settings.genos_model,
@@ -181,6 +188,7 @@ class Settings:
             settings.reranking_model,
             settings.llm_max_retries,
             settings.mcp_max_retries,
+            settings.response_error_details_enabled,
         )
         return settings
 
@@ -200,10 +208,7 @@ class Settings:
     def genos_openai_base_url(self) -> str:
         """LangChain ChatOpenAI에 전달할 GenOS /v1 기본 URL을 반환한다."""
 
-        return (
-            f"{self.genos_url}/api/gateway/rep/serving/"
-            f"{self.genos_serving_id}/v1"
-        )
+        return f"{self.genos_url}/api/gateway/rep/serving/{self.genos_serving_id}/v1"
 
     @property
     def genos_mcp_url(self) -> str:
@@ -218,8 +223,7 @@ class Settings:
         """GenOS reranker serving의 OpenAI 호환 기본 경로를 반환한다."""
 
         base = (
-            f"{self.genos_url}/api/gateway/rep/serving/"
-            f"{self.reranking_serving_id}/v1"
+            f"{self.genos_url}/api/gateway/rep/serving/{self.reranking_serving_id}/v1"
         )
         return f"{base}/{self.reranking_endpoint_path}"
 
@@ -239,6 +243,15 @@ def _positive_int_env(name: str, default: int) -> int:
     value = int(os.getenv(name, str(default)))
     if value < 1:
         raise ValueError(f"{name}는 1 이상의 정수여야 합니다: {value}")
+    return value
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    """0보다 큰 실수 설정을 검증한다."""
+
+    value = float(os.getenv(name, str(default)))
+    if value <= 0:
+        raise ValueError(f"{name}는 0보다 커야 합니다: {value}")
     return value
 
 

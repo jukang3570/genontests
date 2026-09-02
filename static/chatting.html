@@ -36,11 +36,18 @@
     button, textarea { font: inherit; }
 
     .app {
-      width: min(920px, 100%);
+      width: min(1560px, 100%);
       height: 100%;
       min-height: 540px;
       margin: 0 auto;
       padding: 24px;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(520px, 0.9fr) minmax(520px, 1.1fr);
+      gap: 16px;
+      height: 100%;
     }
 
     .chat-shell {
@@ -53,6 +60,90 @@
       background: rgba(255, 255, 255, 0.94);
       box-shadow: var(--shadow);
       backdrop-filter: blur(14px);
+    }
+
+    .debug-shell {
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid rgba(213, 221, 232, 0.95);
+      border-radius: 24px;
+      background: #0d1726;
+      color: #d0d5dd;
+      box-shadow: var(--shadow);
+    }
+
+    .debug-header {
+      padding: 18px 20px;
+      border-bottom: 1px solid #344054;
+    }
+
+    .debug-header h2 { margin: 0; color: #fff; font-size: 16px; }
+    .debug-header p { margin: 5px 0 0; color: #98a2b3; font-size: 11px; line-height: 1.5; }
+
+    .debug-content {
+      height: calc(100% - 78px);
+      padding: 14px;
+      overflow: auto;
+    }
+
+    .debug-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+      margin-bottom: 12px;
+    }
+
+    .debug-metric {
+      padding: 9px;
+      border: 1px solid #344054;
+      border-radius: 9px;
+      background: #182230;
+    }
+
+    .debug-metric span { display: block; color: #98a2b3; font-size: 10px; }
+    .debug-metric strong { display: block; margin-top: 3px; color: #fff; font-size: 15px; }
+
+    .debug-current {
+      margin-bottom: 12px;
+      padding: 10px;
+      border: 1px solid #344054;
+      border-radius: 9px;
+      background: #101828;
+      font: 11px/1.55 Consolas, Monaco, monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .debug-trace-list { display: grid; gap: 8px; }
+
+    .debug-trace {
+      padding: 10px;
+      border: 1px solid #344054;
+      border-left: 4px solid #528bff;
+      border-radius: 8px;
+      background: #182230;
+    }
+
+    .debug-trace.completed { border-left-color: #32d583; }
+    .debug-trace.failed,
+    .debug-trace.stopped { border-color: #7a271a; border-left-color: #f97066; background: #301b1d; }
+    .debug-trace-title { color: #f2f4f7; font-size: 11px; font-weight: 800; line-height: 1.45; }
+    .debug-trace-source { margin-top: 5px; color: #98a2b3; font: 10px/1.5 Consolas, Monaco, monospace; }
+    .debug-trace-error { margin-top: 7px; color: #fda29b; font-size: 11px; line-height: 1.5; }
+    .debug-trace-hint { margin-top: 7px; color: #84caff; font-size: 10px; line-height: 1.5; }
+
+    .debug-shell details { margin-top: 12px; }
+    .debug-shell summary { color: #84caff; cursor: pointer; font-size: 11px; font-weight: 700; }
+    .debug-shell pre {
+      max-height: 300px;
+      margin: 8px 0 0;
+      padding: 10px;
+      overflow: auto;
+      border-radius: 8px;
+      background: #000b17;
+      color: #d0d5dd;
+      font: 10px/1.5 Consolas, Monaco, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
 
     header {
@@ -133,6 +224,11 @@
 
     .message-row.user { justify-content: flex-end; }
 
+    .message-row.assistant {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
     .bubble {
       max-width: min(680px, 84%);
       padding: 13px 16px;
@@ -158,6 +254,73 @@
       border: 1px solid #f3c8c4;
       background: #fff2f0;
       color: var(--danger);
+    }
+
+    .recommended-questions {
+      display: flex;
+      max-width: min(680px, 84%);
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 9px;
+    }
+
+    .recommended-question {
+      padding: 8px 11px;
+      border: 1px solid #b9d3fa;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--brand-dark);
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1.35;
+      text-align: left;
+    }
+
+    .recommended-question:hover:not(:disabled) {
+      border-color: var(--brand);
+      background: #eef5ff;
+    }
+
+    .recommended-question:disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
+
+    .action-form {
+      width: min(680px, 92%);
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid #fdb022;
+      border-radius: 12px;
+      background: #fffaeb;
+    }
+
+    .action-form label {
+      display: block;
+      margin: 8px 0 4px;
+      color: #7a2e0e;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .action-form input {
+      width: 100%;
+      height: 38px;
+      padding: 0 10px;
+      border: 1px solid #fdb022;
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .action-submit {
+      margin-top: 10px;
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: #b54708;
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
     }
 
     .typing {
@@ -261,6 +424,13 @@
       .bubble { max-width: 90%; }
     }
 
+    @media (max-width: 1120px) {
+      .app { height: auto; min-height: 100%; }
+      .workspace { grid-template-columns: 1fr; height: auto; }
+      .chat-shell { height: 760px; }
+      .debug-shell { height: 760px; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; }
     }
@@ -268,7 +438,8 @@
 </head>
 <body>
   <main class="app">
-    <section class="chat-shell" aria-label="SC AX 상담 채팅">
+    <div class="workspace">
+      <section class="chat-shell" aria-label="SC AX 상담 채팅">
       <header>
         <div class="identity">
           <div class="mark" aria-hidden="true">AI</div>
@@ -299,7 +470,18 @@
         </form>
         <p class="hint">Enter로 전송 · Shift+Enter로 줄바꿈</p>
       </div>
-    </section>
+      </section>
+
+      <aside class="debug-shell" aria-label="개발 실행 추적">
+        <div class="debug-header">
+          <h2>Python 실행 추적 · 오류 콘솔</h2>
+          <p>X-Debug-Trace 요청에서만 수신합니다. 파일·함수·단계 출력과 오류 코드를 실시간 표시합니다.</p>
+        </div>
+        <div class="debug-content" id="debug-content">
+          <div class="debug-current">질문을 전송하면 입력 검증부터 SSE 종료까지 표시됩니다.</div>
+        </div>
+      </aside>
+    </div>
   </main>
 
   <script>
@@ -308,14 +490,107 @@
     const input = document.querySelector("#question");
     const sendButton = document.querySelector("#send");
     const clearButton = document.querySelector("#clear");
+    const debugContent = document.querySelector("#debug-content");
     const basePath = window.location.pathname.replace(/\/chatting\/?$/, "");
     const chatEndpoint = `${basePath}/chat`;
     const pageParameters = new URLSearchParams(window.location.search);
     const employeeId = pageParameters.get("employeeId") || "";
+    const rawAccessToken = pageParameters.get("accessToken") || "mock-token";
     const conversation = [];
+    let debugState = null;
     let pending = false;
     let sessionId = sessionStorage.getItem("scax-chat-session") || crypto.randomUUID();
     sessionStorage.setItem("scax-chat-session", sessionId);
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function prettyJson(value) {
+      return escapeHtml(JSON.stringify(value, null, 2));
+    }
+
+    function initializeDebug(request) {
+      debugState = {
+        request,
+        http: null,
+        requestId: null,
+        status: "STREAMING",
+        traces: [],
+        events: [],
+        error: null,
+      };
+      renderDebug();
+    }
+
+    function sourceLabel(trace) {
+      const source = trace?.source ?? {};
+      return `${source.file ?? "unknown.py"}${source.line ? `:${source.line}` : ""} → ${source.function ?? "unknown"}`;
+    }
+
+    function renderDebug() {
+      if (!debugState) return;
+      const failed = debugState.traces.filter(
+        (item) => ["FAILED", "STOPPED"].includes(item?.phase),
+      );
+      const completed = debugState.traces.filter(
+        (item) => item?.phase === "COMPLETED",
+      );
+      const current = debugState.traces.at(-1);
+      const traceHtml = debugState.traces.map((trace) => {
+        const phase = String(trace?.phase ?? "UNKNOWN").toLowerCase();
+        const error = trace?.error;
+        return `
+          <article class="debug-trace ${escapeHtml(phase)}">
+            <div class="debug-trace-title">#${escapeHtml(trace?.sequence ?? "-")} · ${escapeHtml(trace?.stage ?? trace?.stageCode ?? "단계")}</div>
+            <div class="debug-trace-source">
+              ${escapeHtml(sourceLabel(trace))}<br>
+              ${escapeHtml(trace?.phase ?? "UNKNOWN")} · +${escapeHtml(trace?.offsetMs ?? 0)}ms · ${escapeHtml(trace?.durationMs ?? 0)}ms
+            </div>
+            ${error ? `<div class="debug-trace-error"><strong>${escapeHtml(error.code ?? "UNKNOWN_ERROR")}</strong><br>${escapeHtml(error.type ?? "Error")}: ${escapeHtml(error.message ?? "")}</div>` : ""}
+            ${trace?.customizationHint ? `<div class="debug-trace-hint">수정 안내: ${escapeHtml(trace.customizationHint)}</div>` : ""}
+            ${trace?.details !== undefined ? `<details ${error ? "open" : ""}><summary>단계 입력·출력 요약</summary><pre>${prettyJson(trace.details)}</pre></details>` : ""}
+          </article>
+        `;
+      }).join("");
+      debugContent.innerHTML = `
+        <div class="debug-metrics">
+          <div class="debug-metric"><span>상태</span><strong>${escapeHtml(debugState.status)}</strong></div>
+          <div class="debug-metric"><span>전체 단계</span><strong>${debugState.traces.length}</strong></div>
+          <div class="debug-metric"><span>완료</span><strong>${completed.length}</strong></div>
+          <div class="debug-metric"><span>실패</span><strong>${failed.length}</strong></div>
+        </div>
+        <div class="debug-current">
+          request_id=${escapeHtml(debugState.requestId ?? "수신 대기")}<br>
+          HTTP=${escapeHtml(debugState.http?.status ?? "대기")} · SSE=${debugState.events.length}<br>
+          current=${escapeHtml(current ? sourceLabel(current) : "요청 전")}
+          ${debugState.error ? `<br>error=${escapeHtml(debugState.error.code ?? "ERROR")} · ${escapeHtml(debugState.error.message ?? "")}` : ""}
+        </div>
+        <div class="debug-trace-list">${traceHtml || '<div class="debug-current">trace 이벤트 수신 대기 중...</div>'}</div>
+        <details open><summary>전송한 /chat JSON</summary><pre>${prettyJson(debugState.request)}</pre></details>
+        <details><summary>수신한 SSE 원본 (${debugState.events.length}개)</summary><pre>${prettyJson(debugState.events)}</pre></details>
+      `;
+    }
+
+    function handleDebugEvent(frame) {
+      if (!debugState) return;
+      debugState.events.push(frame);
+      if (frame?.event === "request_id") debugState.requestId = frame.data;
+      if (frame?.event === "trace") {
+        debugState.traces.push(frame.data ?? {});
+        if (["FAILED", "STOPPED"].includes(frame.data?.phase)) {
+          debugState.status = "ERROR";
+          debugState.error = frame.data?.error ?? {code: "TRACE_STAGE_FAILED"};
+        }
+      }
+      if (frame?.event === "end") debugState.status = frame.data?.status ?? "END";
+      renderDebug();
+    }
 
     function addMessage(role, text, extraClass = "") {
       const row = document.createElement("div");
@@ -342,6 +617,82 @@
       return row;
     }
 
+    function addRecommendedQuestions(row, items) {
+      if (!Array.isArray(items) || !items.length) return;
+      const container = document.createElement("div");
+      container.className = "recommended-questions";
+      container.setAttribute("aria-label", "추천 질문");
+      for (const item of items) {
+        if (typeof item?.question !== "string" || !item.question.trim()) continue;
+        const button = document.createElement("button");
+        button.className = "recommended-question";
+        button.type = "button";
+        const isConfirmation = item.interactionType === "confirmation";
+        button.textContent = isConfirmation
+          ? `진행 · ${item.question}`
+          : item.question;
+        button.title = item.detailScenarioCode || "추천 질문";
+        button.addEventListener("click", () => {
+          if (pending) return;
+          const followupMessage = item?.affirmativeFollowup?.message;
+          const question = isConfirmation && typeof followupMessage === "string"
+            ? followupMessage
+            : item.question;
+          submitQuestion(question, isConfirmation ? item.id : null);
+        });
+        container.appendChild(button);
+      }
+      if (container.childElementCount) row.appendChild(container);
+    }
+
+    function addActionForm(row, action) {
+      if (!action || !Array.isArray(action.inputs) || !action.thread_id) return;
+      const container = document.createElement("div");
+      container.className = "action-form";
+      const fields = [];
+      for (const [index, item] of action.inputs.entries()) {
+        const field = document.createElement("input");
+        field.dataset.code = item.code;
+        field.type = item.type === "hidden"
+          ? "hidden"
+          : item.sensitive
+            ? "password"
+            : item.type || "text";
+        field.required = Boolean(item.required);
+        if (item.pattern) field.pattern = item.pattern;
+        if (item.minLength) field.minLength = Number(item.minLength);
+        if (item.maxLength) field.maxLength = Number(item.maxLength);
+        if (item.expectedValue != null) field.value = String(item.expectedValue);
+        if (field.type !== "hidden") {
+          const label = document.createElement("label");
+          label.textContent = item.label || item.code || `입력 ${index + 1}`;
+          container.appendChild(label);
+        }
+        container.appendChild(field);
+        fields.push(field);
+      }
+      const button = document.createElement("button");
+      button.className = "action-submit";
+      button.type = "button";
+      button.textContent = "추가 입력값 전송";
+      button.addEventListener("click", () => {
+        if (pending || !fields.every((field) => field.reportValidity())) return;
+        const humanInput = fields.map((field) => ({
+          code: field.dataset.code,
+          input: field.value,
+        }));
+        container.querySelectorAll("input, button").forEach(
+          (element) => { element.disabled = true; },
+        );
+        submitQuestion("요청한 추가 입력값을 전달합니다.", null, {
+          threadId: action.thread_id,
+          humanInput,
+        });
+      });
+      container.appendChild(button);
+      row.appendChild(container);
+    }
+
     function resizeInput() {
       input.style.height = "auto";
       input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
@@ -354,34 +705,145 @@
       clearButton.disabled = value;
     }
 
-    async function submitQuestion(question) {
+    async function readSse(response, onEvent) {
+      if (!response.body) {
+        throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+      while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value ?? new Uint8Array(), {stream: !done});
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+          const data = block
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (!data) continue;
+          onEvent(JSON.parse(data));
+        }
+        if (done) break;
+      }
+    }
+
+    async function submitQuestion(
+      question,
+      recommendationId = null,
+      continuation = null,
+    ) {
       addMessage("user", question);
       conversation.push({ role: "user", content: question });
       const typing = addTyping();
+      const bubble = typing.querySelector(".bubble");
       setPending(true);
 
       try {
+        const authorization = rawAccessToken.toLowerCase().startsWith("bearer ")
+          ? rawAccessToken
+          : `Bearer ${rawAccessToken}`;
+        const requestPayload = {
+          message: question,
+          session_id: sessionId,
+          thread_id: continuation?.threadId ?? null,
+          endpoint: null,
+          agent_code: null,
+          recommendation_id: recommendationId,
+          humanInput: continuation?.humanInput ?? [],
+          user: {
+            id: employeeId || null,
+            deptcode: null,
+            deptname: null,
+          },
+        };
+        initializeDebug(requestPayload);
         const response = await fetch(chatEndpoint, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question,
-            overrideConfig: { sessionId, employeeId },
-            history: conversation.slice(-20),
-          }),
+          headers: {
+            "Authorization": authorization,
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "X-Debug-Trace": "true",
+          },
+          body: JSON.stringify(requestPayload),
         });
-        const payload = await response.json().catch(() => null);
+        debugState.http = {
+          status: response.status,
+          statusText: response.statusText,
+          contentType: response.headers.get("content-type"),
+          url: response.url,
+        };
+        renderDebug();
         if (!response.ok) {
-          throw new Error(payload?.detail?.message || `HTTP ${response.status}`);
+          const raw = await response.text();
+          throw new Error(raw || `HTTP ${response.status}`);
         }
-        const text = payload?.data?.text;
-        if (payload?.code !== 0 || typeof text !== "string") {
-          throw new Error("서버 응답 형식이 올바르지 않습니다.");
+        let assistantText = "";
+        let recommendedQuestions = [];
+        let pendingAction = null;
+        let streamingStarted = false;
+        await readSse(response, (frame) => {
+          handleDebugEvent(frame);
+          const event = frame?.event;
+          const data = frame?.data;
+          if (event === "session_id" && typeof data === "string") {
+            sessionId = data;
+            sessionStorage.setItem("scax-chat-session", sessionId);
+          } else if (event === "token" && typeof data === "string") {
+            if (!streamingStarted) {
+              bubble.classList.remove("typing");
+              bubble.removeAttribute("aria-label");
+              bubble.textContent = "";
+              streamingStarted = true;
+            }
+            assistantText += data;
+            bubble.textContent = assistantText;
+          } else if (event === "messages" && Array.isArray(data)) {
+            const assistant = [...data]
+              .reverse()
+              .find((item) => item?.role === "assistant");
+            if (typeof assistant?.content === "string" && assistant.content) {
+              assistantText = assistant.content;
+              bubble.classList.remove("typing");
+              bubble.textContent = assistantText;
+              streamingStarted = true;
+            } else if (assistant?.content === "" && streamingStarted) {
+              assistantText = "";
+              bubble.textContent = "";
+            }
+            const items = assistant?.metadata?.recommendedQuestions;
+            if (Array.isArray(items)) recommendedQuestions = items;
+          } else if (event === "recommendedQuestions" && Array.isArray(data)) {
+            recommendedQuestions = data;
+          } else if (event === "action" && typeof data?.message === "string") {
+            pendingAction = data;
+            assistantText = data.message;
+            bubble.classList.remove("typing");
+            bubble.textContent = assistantText;
+            streamingStarted = true;
+          }
+          messagesElement.scrollTop = messagesElement.scrollHeight;
+        });
+        if (!streamingStarted) {
+          bubble.classList.remove("typing");
+          bubble.textContent = "응답이 완료되었지만 표시할 내용이 없습니다.";
+          assistantText = bubble.textContent;
         }
-        typing.remove();
-        addMessage("assistant", text);
-        conversation.push({ role: "assistant", content: text });
+        addRecommendedQuestions(typing, recommendedQuestions);
+        addActionForm(typing, pendingAction);
+        conversation.push({ role: "assistant", content: assistantText });
       } catch (error) {
+        if (debugState) {
+          debugState.status = "ERROR";
+          debugState.error = {
+            code: debugState.http ? `HTTP_${debugState.http.status}` : "BROWSER_REQUEST_ERROR",
+            message: error.message || "요청 실패",
+          };
+          renderDebug();
+        }
         typing.remove();
         addMessage(
           "assistant",
@@ -400,7 +862,7 @@
       if (!question || pending) return;
       input.value = "";
       resizeInput();
-      submitQuestion(question);
+      submitQuestion(question, null);
     });
 
     input.addEventListener("input", resizeInput);
@@ -416,6 +878,8 @@
       sessionId = crypto.randomUUID();
       sessionStorage.setItem("scax-chat-session", sessionId);
       messagesElement.replaceChildren();
+      debugState = null;
+      debugContent.innerHTML = '<div class="debug-current">새 대화입니다. 질문을 전송하면 실행 단계가 표시됩니다.</div>';
       addMessage("assistant", "안녕하세요. 궁금한 내용을 편하게 질문해 주세요.");
       input.focus();
     });

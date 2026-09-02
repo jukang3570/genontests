@@ -10,6 +10,13 @@ from app.config import Settings
 from app.observability import log_failure_diagnostic, logger, timed
 
 
+def _project_scope(value: str | None, fallback: str) -> str:
+    """요청 서비스 별칭을 Redis namespace로 사용하고 빈 값만 기본값으로 보완한다."""
+
+    normalized = str(value or "").strip()
+    return normalized or fallback
+
+
 class HitlStateEntry(BaseModel):
     """Redis String에 JSON으로 저장되는 한 건의 HITL 대기 상태."""
 
@@ -65,11 +72,20 @@ class HitlStateStore(Protocol):
         hitl_type: str,
         graph_state: dict[str, Any],
         interrupt: dict[str, Any],
+        project_code: str | None = None,
     ) -> None: ...
 
-    async def get(self, thread_id: str) -> HitlStateEntry | None: ...
+    async def get(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> HitlStateEntry | None: ...
 
-    async def delete(self, thread_id: str) -> None: ...
+    async def delete(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> None: ...
 
     async def aclose(self) -> None: ...
 
@@ -79,7 +95,7 @@ class InMemoryHitlStateStore:
 
     def __init__(self, project_code: str = "acqsc") -> None:
         self._project_code = project_code.casefold()
-        self._states: dict[str, HitlStateEntry] = {}
+        self._states: dict[tuple[str, str], HitlStateEntry] = {}
 
     @property
     def enabled(self) -> bool:
@@ -94,11 +110,14 @@ class InMemoryHitlStateStore:
         hitl_type: str,
         graph_state: dict[str, Any],
         interrupt: dict[str, Any],
+        project_code: str | None = None,
     ) -> None:
+        scope = _project_scope(project_code, self._project_code)
+        key = (scope, thread_id)
         now = datetime.now(UTC).isoformat()
-        previous = self._states.get(thread_id)
-        self._states[thread_id] = HitlStateEntry(
-            project_code=self._project_code,
+        previous = self._states.get(key)
+        self._states[key] = HitlStateEntry(
+            project_code=scope,
             thread_id=thread_id,
             hitl_type=hitl_type,
             graph_state=graph_state,
@@ -107,11 +126,21 @@ class InMemoryHitlStateStore:
             updated_at=now,
         )
 
-    async def get(self, thread_id: str) -> HitlStateEntry | None:
-        return self._states.get(thread_id)
+    async def get(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> HitlStateEntry | None:
+        scope = _project_scope(project_code, self._project_code)
+        return self._states.get((scope, thread_id))
 
-    async def delete(self, thread_id: str) -> None:
-        self._states.pop(thread_id, None)
+    async def delete(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> None:
+        scope = _project_scope(project_code, self._project_code)
+        self._states.pop((scope, thread_id), None)
 
     async def aclose(self) -> None:
         return None
@@ -149,10 +178,15 @@ class RedisHitlStateStore:
             self._ttl_seconds,
         )
 
-    def _key(self, thread_id: str) -> str:
+    def _key(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> str:
         """프로젝트별 HITL 상태 Redis 키를 만든다."""
 
-        return f"{self._project_code}:{self._key_prefix}:{thread_id}"
+        scope = _project_scope(project_code, self._project_code)
+        return f"{scope}:{self._key_prefix}:{thread_id}"
 
     @property
     def enabled(self) -> bool:
@@ -168,14 +202,16 @@ class RedisHitlStateStore:
         hitl_type: str,
         graph_state: dict[str, Any],
         interrupt: dict[str, Any],
+        project_code: str | None = None,
     ) -> None:
         """HITL 상태를 JSON 문자열로 저장하고 TTL을 갱신한다."""
 
-        key = self._key(thread_id)
+        scope = _project_scope(project_code, self._project_code)
+        key = self._key(thread_id, scope)
         now = datetime.now(UTC).isoformat()
-        previous = await self.get(thread_id)
+        previous = await self.get(thread_id, project_code=scope)
         entry = HitlStateEntry(
-            project_code=self._project_code,
+            project_code=scope,
             thread_id=thread_id,
             hitl_type=hitl_type,
             graph_state=graph_state,
@@ -185,8 +221,7 @@ class RedisHitlStateStore:
         )
         payload = entry.model_dump_json()
         logger.info(
-            "======== Redis HITL SET 준비 | 키=%s | TTL초=%d | "
-            "신규상태=%s",
+            "======== Redis HITL SET 준비 | 키=%s | TTL초=%d | 신규상태=%s",
             key,
             self._ttl_seconds,
             entry.model_dump(mode="json"),
@@ -204,18 +239,22 @@ class RedisHitlStateStore:
             ) from exc
 
         logger.info(
-            "======== Redis HITL 상태 저장 완료 | thread_id=%s | "
-            "유형=%s | TTL초=%d",
+            "======== Redis HITL 상태 저장 완료 | thread_id=%s | 유형=%s | TTL초=%d",
             thread_id,
             hitl_type,
             self._ttl_seconds,
         )
 
     @timed("Redis HITL 상태 조회")
-    async def get(self, thread_id: str) -> HitlStateEntry | None:
+    async def get(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> HitlStateEntry | None:
         """thread_id의 상태를 조회하며 존재하지 않으면 None을 반환한다."""
 
-        key = self._key(thread_id)
+        scope = _project_scope(project_code, self._project_code)
+        key = self._key(thread_id, scope)
         logger.info(
             "======== Redis HITL GET 실행 | thread_id=%s | 키=%s",
             thread_id,
@@ -257,17 +296,13 @@ class RedisHitlStateStore:
             ) from exc
 
         # 키뿐 아니라 JSON 내부 프로젝트와 thread_id도 다시 확인한다.
-        if (
-            entry.project_code != self._project_code
-            or entry.thread_id != thread_id
-        ):
+        if entry.project_code != scope or entry.thread_id != thread_id:
             raise HitlStateStoreUnavailableError(
                 "Redis HITL 상태의 식별 정보가 요청과 일치하지 않습니다."
             )
 
         logger.info(
-            "======== Redis HITL 상태 조회 완료 | thread_id=%s | 유형=%s | "
-            "복원상태=%s",
+            "======== Redis HITL 상태 조회 완료 | thread_id=%s | 유형=%s | 복원상태=%s",
             thread_id,
             entry.hitl_type,
             entry.model_dump(mode="json"),
@@ -275,10 +310,14 @@ class RedisHitlStateStore:
         return entry
 
     @timed("Redis HITL 상태 삭제")
-    async def delete(self, thread_id: str) -> None:
+    async def delete(
+        self,
+        thread_id: str,
+        project_code: str | None = None,
+    ) -> None:
         """정상 처리된 HITL 상태를 Redis에서 삭제한다."""
 
-        key = self._key(thread_id)
+        key = self._key(thread_id, project_code)
         try:
             deleted = await self._client.delete(key)
         except (RedisError, OSError, TimeoutError) as exc:
@@ -338,8 +377,7 @@ def create_hitl_state_store(settings: Settings) -> HitlStateStore:
 
     if settings.hitl_state_backend == "memory":
         logger.info(
-            "======== HITL 저장소 준비 | 종류=memory | "
-            "Redis 없이 불일치·승인 흐름 실행"
+            "======== HITL 저장소 준비 | 종류=memory | Redis 없이 불일치·승인 흐름 실행"
         )
         return InMemoryHitlStateStore(settings.project_code)
     if settings.hitl_state_backend == "redis":
@@ -349,6 +387,4 @@ def create_hitl_state_store(settings: Settings) -> HitlStateStore:
             ttl_seconds=settings.redis_hitl_ttl_seconds,
             project_code=settings.project_code,
         )
-    raise ValueError(
-        "HITL_STATE_BACKEND는 memory 또는 redis만 사용할 수 있습니다."
-    )
+    raise ValueError("HITL_STATE_BACKEND는 memory 또는 redis만 사용할 수 있습니다.")

@@ -3,6 +3,7 @@
 import inspect
 import json
 import logging
+import re
 import sys
 import time
 from contextlib import asynccontextmanager, contextmanager
@@ -31,6 +32,13 @@ _LOG_CONTEXT: ContextVar[dict[str, str]] = ContextVar(
     "master_agent_log_context",
     default={},
 )
+
+# 개발 목업이 명시적으로 요청한 경우에만 현재 비동기 요청 문맥의 함수 실행
+# 정보를 SSE로 전달한다. 일반 운영 요청에서는 값이 None이므로 기존 로그 외에
+# 어떠한 내부 코드 경로도 응답에 노출하지 않는다.
+_DEVELOPER_TRACE_SINK: ContextVar[
+    Callable[[dict[str, Any]], None] | None
+] = ContextVar("master_agent_developer_trace_sink", default=None)
 
 
 class _RequestContextFilter(logging.Filter):
@@ -86,10 +94,7 @@ def _pretty_log_arguments(arguments: Any) -> Any:
         return tuple(_pretty_log_value(value) for value in arguments)
     if isinstance(arguments, dict):
         # ``logger.info("%(name)s", {"name": ...})`` 형식도 보존한다.
-        return {
-            key: _pretty_log_value(value)
-            for key, value in arguments.items()
-        }
+        return {key: _pretty_log_value(value) for key, value in arguments.items()}
     return arguments
 
 
@@ -140,10 +145,7 @@ def configure_logging(level: str = "INFO") -> None:
     # 개발·운영 실행 방식과 관계없이 같은 추적 필드가 출력되도록 한다.
     formatter = _ReadableMultilineFormatter(_LOG_FORMAT)
     for handler in logging.getLogger().handlers:
-        if not any(
-            isinstance(item, _RequestContextFilter)
-            for item in handler.filters
-        ):
+        if not any(isinstance(item, _RequestContextFilter) for item in handler.filters):
             handler.addFilter(_RequestContextFilter())
         handler.setFormatter(formatter)
 
@@ -158,17 +160,121 @@ def log_context(**values: Any) -> Iterator[None]:
 
     current = dict(_LOG_CONTEXT.get())
     current.update(
-        {
-            key: str(value)
-            for key, value in values.items()
-            if value is not None
-        }
+        {key: str(value) for key, value in values.items() if value is not None}
     )
     token = _LOG_CONTEXT.set(current)
     try:
         yield
     finally:
         _LOG_CONTEXT.reset(token)
+
+
+@contextmanager
+def developer_trace_context(
+    sink: Callable[[dict[str, Any]], None] | None,
+) -> Iterator[None]:
+    """현재 요청의 ``@timed`` 실행 정보를 받을 개발용 sink를 설정한다.
+
+    sink는 네트워크 I/O를 하지 않고 ``asyncio.Queue.put_nowait``처럼 즉시
+    반환해야 한다. 추적 기능의 오류가 업무 응답을 깨뜨리지 않도록 sink 예외는
+    :func:`emit_developer_trace`에서 로그만 남기고 무시한다.
+    """
+
+    token = _DEVELOPER_TRACE_SINK.set(sink)
+    try:
+        yield
+    finally:
+        _DEVELOPER_TRACE_SINK.reset(token)
+
+
+def emit_developer_trace(payload: dict[str, Any]) -> None:
+    """활성 개발 추적 sink에 구조화된 단계 정보를 전달한다."""
+
+    sink = _DEVELOPER_TRACE_SINK.get()
+    if sink is None:
+        return
+    try:
+        sink(dict(payload))
+    except Exception as exc:  # pragma: no cover - 진단 기능은 업무 흐름을 막지 않는다.
+        logger.warning(
+            "!!!!!!!! 개발 추적 이벤트 생성 실패 | 오류유형=%s",
+            type(exc).__name__,
+        )
+
+
+def error_code_for_exception(exc: BaseException) -> str:
+    """예외 클래스명을 목업에서 검색하기 쉬운 안정적인 오류 코드로 바꾼다."""
+
+    explicit_codes = {
+        "HitlStateNotFoundError": "HITL_STATE_NOT_FOUND",
+        "HitlStateStoreUnavailableError": "HITL_STATE_STORE_UNAVAILABLE",
+        "RequestValidationError": "REQUEST_VALIDATION_ERROR",
+        "HTTPStatusError": "UPSTREAM_HTTP_STATUS_ERROR",
+        "ConnectError": "UPSTREAM_CONNECTION_ERROR",
+        "ReadTimeout": "UPSTREAM_READ_TIMEOUT",
+        "TimeoutException": "UPSTREAM_TIMEOUT",
+        "JSONDecodeError": "INVALID_JSON_RESPONSE",
+    }
+    type_name = type(exc).__name__
+    if type_name in explicit_codes:
+        return explicit_codes[type_name]
+    snake_name = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", type_name)
+    snake_name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", snake_name).upper()
+    return snake_name or "UNEXPECTED_ERROR"
+
+
+def _trace_source(func: Callable[..., Any]) -> dict[str, Any]:
+    """데코레이트된 함수의 저장소 상대 파일·함수·시작 줄을 반환한다."""
+
+    module = func.__module__
+    file_path = f"{module.replace('.', '/')}.py"
+    code = getattr(func, "__code__", None)
+    return {
+        "file": file_path,
+        "function": func.__qualname__,
+        "line": code.co_firstlineno if code is not None else None,
+    }
+
+
+def _emit_timed_trace(
+    *,
+    stage: str,
+    phase: str,
+    func: Callable[..., Any],
+    started: float,
+    exc: BaseException | None = None,
+) -> None:
+    """``@timed`` 공통 추적 봉투를 생성한다."""
+
+    payload: dict[str, Any] = {
+        "kind": "python_function",
+        "stage": stage,
+        "stageCode": f"PYTHON::{func.__module__}::{func.__qualname__}",
+        "phase": phase,
+        "source": _trace_source(func),
+        "durationMs": round(_elapsed_seconds(started) * 1000, 3),
+    }
+    if exc is not None:
+        root = exc
+        visited: set[int] = set()
+        while id(root) not in visited:
+            visited.add(id(root))
+            nested = root.__cause__ or root.__context__
+            if nested is None:
+                break
+            root = nested
+        payload["error"] = {
+            "code": error_code_for_exception(exc),
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "rootType": type(root).__name__,
+            "rootMessage": str(root),
+        }
+        payload["customizationHint"] = (
+            f"{payload['source']['file']}의 {func.__qualname__} 함수와 "
+            "동일 request_id의 서버 실패 진단 로그를 확인하세요."
+        )
+    emit_developer_trace(payload)
 
 
 def log_failure_diagnostic(
@@ -234,6 +340,12 @@ def timed(
             @wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs):
                 started = time.perf_counter()
+                _emit_timed_trace(
+                    stage=stage,
+                    phase="STARTED",
+                    func=func,
+                    started=started,
+                )
                 logger.info(
                     "======== 단계 시작 | %s | 함수=%s",
                     stage,
@@ -241,7 +353,14 @@ def timed(
                 )
                 try:
                     result = await func(*args, **kwargs)
-                except expected_exceptions:
+                except expected_exceptions as exc:
+                    _emit_timed_trace(
+                        stage=stage,
+                        phase="STOPPED",
+                        func=func,
+                        started=started,
+                        exc=exc,
+                    )
                     logger.info(
                         "======== 단계 중단 | %s | 함수=%s | 소요시간=%.3f초",
                         stage,
@@ -250,6 +369,13 @@ def timed(
                     )
                     raise
                 except Exception as exc:
+                    _emit_timed_trace(
+                        stage=stage,
+                        phase="FAILED",
+                        func=func,
+                        started=started,
+                        exc=exc,
+                    )
                     logger.error(
                         "======== 단계 실패 | %s | 함수=%s | 코드위치=%s.%s | "
                         "예외유형=%s | 오류=%s | 자동재시도=없음 | "
@@ -264,6 +390,12 @@ def timed(
                         exc_info=(type(exc), exc, exc.__traceback__),
                     )
                     raise
+                _emit_timed_trace(
+                    stage=stage,
+                    phase="COMPLETED",
+                    func=func,
+                    started=started,
+                )
                 logger.info(
                     "======== 단계 완료 | %s | 함수=%s | 소요시간=%.3f초",
                     stage,
@@ -277,6 +409,12 @@ def timed(
         @wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs):
             started = time.perf_counter()
+            _emit_timed_trace(
+                stage=stage,
+                phase="STARTED",
+                func=func,
+                started=started,
+            )
             logger.info(
                 "======== 단계 시작 | %s | 함수=%s",
                 stage,
@@ -284,7 +422,14 @@ def timed(
             )
             try:
                 result = func(*args, **kwargs)
-            except expected_exceptions:
+            except expected_exceptions as exc:
+                _emit_timed_trace(
+                    stage=stage,
+                    phase="STOPPED",
+                    func=func,
+                    started=started,
+                    exc=exc,
+                )
                 logger.info(
                     "======== 단계 중단 | %s | 함수=%s | 소요시간=%.3f초",
                     stage,
@@ -293,6 +438,13 @@ def timed(
                 )
                 raise
             except Exception as exc:
+                _emit_timed_trace(
+                    stage=stage,
+                    phase="FAILED",
+                    func=func,
+                    started=started,
+                    exc=exc,
+                )
                 logger.error(
                     "======== 단계 실패 | %s | 함수=%s | 코드위치=%s.%s | "
                     "예외유형=%s | 오류=%s | 자동재시도=없음 | "
@@ -307,6 +459,12 @@ def timed(
                     exc_info=(type(exc), exc, exc.__traceback__),
                 )
                 raise
+            _emit_timed_trace(
+                stage=stage,
+                phase="COMPLETED",
+                func=func,
+                started=started,
+            )
             logger.info(
                 "======== 단계 완료 | %s | 함수=%s | 소요시간=%.3f초",
                 stage,

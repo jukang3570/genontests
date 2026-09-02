@@ -1,8 +1,7 @@
 """manifest 기반 Structured Output 시나리오 서브에이전트 실행기."""
 
 from datetime import date
-from enum import Enum
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol, Union
 
 from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -16,7 +15,12 @@ from app.observability import (
     logger,
     timed,
 )
-from app.subagents.models import SubagentResult, SubagentScenarioMatch
+from app.subagents.models import (
+    ScenarioInteraction,
+    ScenarioMcpWorkflow,
+    SubagentResult,
+    SubagentScenarioMatch,
+)
 from app.subagents.prompt_loader import (
     ScenarioPromptBundle,
     SubagentPromptLoader,
@@ -37,6 +41,14 @@ class SubagentRouter(Protocol):
         query: str,
     ) -> SubagentResult | None: ...
 
+    async def classify_for_detail(
+        self,
+        *,
+        agent_code: str,
+        query: str,
+        detail_scenario_code: str,
+    ) -> SubagentResult | None: ...
+
 
 class EmptySubagentRouter:
     """아직 구현되지 않은 에이전트와 단위 테스트를 위한 빈 라우터."""
@@ -52,6 +64,15 @@ class EmptySubagentRouter:
         *,
         agent_code: str,
         query: str,
+    ) -> SubagentResult | None:
+        return None
+
+    async def classify_for_detail(
+        self,
+        *,
+        agent_code: str,
+        query: str,
+        detail_scenario_code: str,
     ) -> SubagentResult | None:
         return None
 
@@ -71,8 +92,7 @@ class ScenarioSubagent:
         self._bundle = bundle
         self._output_model = _create_output_model(bundle)
         self._scenario_by_code = {
-            str(scenario["code"]): scenario
-            for scenario in bundle.manifest["scenarios"]
+            str(scenario["code"]): scenario for scenario in bundle.manifest["scenarios"]
         }
         self._detail_by_code: dict[str, tuple[dict, dict]] = {
             str(detail["code"]): (scenario, detail)
@@ -102,7 +122,7 @@ class ScenarioSubagent:
             model=settings.genos_model,
             api_key=settings.genos_bearer_token,
             temperature=bundle.temperature,
-            max_retries=settings.llm_max_retries,
+            **settings.llm_client_options,
         )
         self._chain = prompt | llm.with_structured_output(
             self._output_model,
@@ -194,16 +214,23 @@ class ScenarioSubagent:
             raise
 
         logger.info(
-            "======== 서브에이전트 LLM 원본 구조화 결과 | 에이전트=%s | 값=%s",
+            "======== 서브에이전트 LLM 원본 구조화 결과 | 에이전트=%s | 매칭=%s",
             self._bundle.agent_code,
-            structured.model_dump(mode="json"),
+            [
+                {
+                    "scenario_code": str(selected.scenario_code),
+                    "detail_scenario_code": str(selected.detail_scenario_code),
+                    "parameter_keys": sorted(selected.parameters.model_dump()),
+                }
+                for selected in structured.matches
+            ],
         )
 
         matches: list[SubagentScenarioMatch] = []
         seen_detail_codes: set[str] = set()
         for selected in structured.matches:
-            selected_scenario_code = selected.scenario_code.value
-            detail_code = selected.detail_scenario_code.value
+            selected_scenario_code = str(selected.scenario_code)
+            detail_code = str(selected.detail_scenario_code)
             if detail_code in seen_detail_codes:
                 logger.info(
                     "======== 서브에이전트 중복 세부시나리오 제거 | 코드=%s",
@@ -232,7 +259,10 @@ class ScenarioSubagent:
                     parameters=_normalize_parameters(
                         raw=selected.parameters.model_dump(),
                         manifest=self._bundle.manifest,
+                        detail=detail,
                     ),
+                    interaction=_parse_interaction(detail),
+                    mcp_workflow=_parse_mcp_workflow(detail),
                 )
             )
 
@@ -245,8 +275,7 @@ class ScenarioSubagent:
             if not terms or not all(term in normalized_query for term in terms):
                 continue
             skip_codes = {
-                str(code)
-                for code in rule.get("skip_if_selected_detail_codes", [])
+                str(code) for code in rule.get("skip_if_selected_detail_codes", [])
             }
             selected_skip_codes = seen_detail_codes & skip_codes
             if selected_skip_codes:
@@ -279,12 +308,16 @@ class ScenarioSubagent:
                         parameters=_normalize_parameters(
                             raw={
                                 str(name): None
-                                for name in self._bundle.manifest[
-                                    "parameter_definitions"
-                                ]
+                                for name in _detail_parameter_names(
+                                    self._bundle.manifest,
+                                    detail,
+                                )
                             },
                             manifest=self._bundle.manifest,
+                            detail=detail,
                         ),
+                        interaction=_parse_interaction(detail),
+                        mcp_workflow=_parse_mcp_workflow(detail),
                     )
                 )
 
@@ -299,6 +332,8 @@ class ScenarioSubagent:
             detail_scenario_code=primary.detail_scenario_code,
             detail_scenario_name=primary.detail_scenario_name,
             parameters=primary.parameters,
+            interaction=primary.interaction,
+            mcp_workflow=primary.mcp_workflow,
             matches=matches,
         )
         logger.info(
@@ -309,6 +344,56 @@ class ScenarioSubagent:
             [match.detail_scenario_code for match in result.matches],
         )
         return result
+
+    def result_for_detail(self, detail_scenario_code: str) -> SubagentResult | None:
+        """manifest가 명시한 후속 detail 결과를 LLM 추측 없이 구성한다."""
+
+        detail_entry = self._detail_by_code.get(detail_scenario_code)
+        if detail_entry is None:
+            logger.warning(
+                "!!!!!!!! 추천질문 후속 세부시나리오 없음 | 에이전트=%s | "
+                "세부시나리오=%s",
+                self._bundle.agent_code,
+                detail_scenario_code,
+            )
+            return None
+
+        scenario, detail = detail_entry
+        parameters = _normalize_parameters(
+            raw={
+                str(name): None
+                for name in _detail_parameter_names(self._bundle.manifest, detail)
+            },
+            manifest=self._bundle.manifest,
+            detail=detail,
+        )
+        match = SubagentScenarioMatch(
+            scenario_code=str(scenario["code"]),
+            scenario_name=str(scenario["name"]),
+            detail_scenario_code=detail_scenario_code,
+            detail_scenario_name=str(detail["name"]),
+            parameters=parameters,
+            interaction=_parse_interaction(detail),
+            mcp_workflow=_parse_mcp_workflow(detail),
+        )
+        logger.info(
+            "======== 추천질문 후속 세부시나리오 직접 선택 | 에이전트=%s | "
+            "세부시나리오=%s | 서브LLM호출=생략",
+            self._bundle.agent_code,
+            detail_scenario_code,
+        )
+        return SubagentResult(
+            agent_code=self._bundle.agent_code,
+            prompt_version=self._bundle.version,
+            scenario_code=match.scenario_code,
+            scenario_name=match.scenario_name,
+            detail_scenario_code=match.detail_scenario_code,
+            detail_scenario_name=match.detail_scenario_name,
+            parameters=match.parameters,
+            interaction=match.interaction,
+            mcp_workflow=match.mcp_workflow,
+            matches=[match],
+        )
 
 
 class ManifestSubagentRouter:
@@ -338,6 +423,20 @@ class ManifestSubagentRouter:
             return None
         return await agent.classify(query)
 
+    async def classify_for_detail(
+        self,
+        *,
+        agent_code: str,
+        query: str,
+        detail_scenario_code: str,
+    ) -> SubagentResult | None:
+        """추천질문 metadata가 지정한 detail을 활성 manifest에서 직접 선택한다."""
+
+        agent = self._agents.get(agent_code.upper())
+        if agent is None:
+            return None
+        return agent.result_for_detail(detail_scenario_code)
+
 
 @timed("서브에이전트 라우터 생성")
 def create_subagent_router(settings: Settings) -> SubagentRouter:
@@ -345,8 +444,7 @@ def create_subagent_router(settings: Settings) -> SubagentRouter:
 
     bundles = SubagentPromptLoader().load_all()
     agents = {
-        code: ScenarioSubagent(settings, bundle)
-        for code, bundle in bundles.items()
+        code: ScenarioSubagent(settings, bundle) for code, bundle in bundles.items()
     }
     return ManifestSubagentRouter(agents)
 
@@ -356,72 +454,93 @@ def _create_output_model(
 ) -> type[BaseModel]:
     """manifest 값으로 LLM에 전달할 엄격한 Pydantic JSON Schema를 만든다."""
 
-    scenario_codes = [
-        str(scenario["code"])
-        for scenario in bundle.manifest["scenarios"]
-    ]
     detail_codes = [
         str(detail["code"])
         for scenario in bundle.manifest["scenarios"]
         for detail in scenario["details"]
     ]
-    scenario_enum = Enum(
-        f"{bundle.agent_code}ScenarioCode",
-        {code: code for code in scenario_codes},
-        type=str,
-    )
-    detail_enum = Enum(
-        f"{bundle.agent_code}DetailScenarioCode",
-        {code: code for code in detail_codes},
-        type=str,
-    )
-
-    parameter_fields: dict[str, tuple[Any, Field]] = {}
-    for name, definition in bundle.manifest[
-        "parameter_definitions"
-    ].items():
-        allowed_values = definition.get("allowed_values")
-        parameter_type: Any = str | None
-        if allowed_values:
-            # manifest의 허용 코드가 JSON Schema enum으로 전달되므로 LLM이
-            # 임의의 파라미터 문자열을 생성하지 못하게 한다.
-            parameter_type = Literal.__getitem__(
-                tuple(str(value) for value in allowed_values) + (None,)
+    match_models: list[type[BaseModel]] = []
+    definitions = bundle.manifest["parameter_definitions"]
+    for scenario in bundle.manifest["scenarios"]:
+        scenario_code = str(scenario["code"])
+        for detail in scenario["details"]:
+            detail_code = str(detail["code"])
+            parameter_fields: dict[str, tuple[Any, Field]] = {}
+            for name in _detail_parameter_names(bundle.manifest, detail):
+                definition = definitions[name]
+                allowed_values = definition.get("allowed_values")
+                value_type = str(definition.get("value_type", "string"))
+                parameter_type: Any
+                if value_type == "string_list":
+                    parameter_type = list[str] | None
+                elif value_type == "string":
+                    parameter_type = str | None
+                else:
+                    raise ValueError(
+                        "지원하지 않는 parameter value_type입니다: "
+                        f"name={name}, value_type={value_type}"
+                    )
+                if allowed_values and value_type == "string":
+                    parameter_type = Literal.__getitem__(
+                        tuple(str(value) for value in allowed_values) + (None,)
+                    )
+                field_options: dict[str, Any] = {
+                    "description": str(definition["description"]),
+                }
+                if value_type == "string":
+                    field_options["pattern"] = definition.get("pattern")
+                elif value_type == "string_list":
+                    field_options["min_length"] = int(
+                        definition.get("min_items", 1)
+                    )
+                    field_options["max_length"] = int(
+                        definition.get("max_items", 10)
+                    )
+                parameter_fields[name] = (
+                    parameter_type,
+                    Field(**field_options),
+                )
+            safe_detail_name = "".join(
+                part.title() for part in detail_code.casefold().split("_")
             )
-        parameter_fields[str(name)] = (
-            parameter_type,
-            Field(
-                description=str(definition["description"]),
-                pattern=definition.get("pattern"),
-            ),
-        )
+            parameters_model = create_model(
+                f"{bundle.agent_code}{safe_detail_name}Parameters",
+                __config__=ConfigDict(extra="forbid"),
+                **parameter_fields,
+            )
+            match_models.append(
+                create_model(
+                    f"{bundle.agent_code}{safe_detail_name}Match",
+                    __config__=ConfigDict(extra="forbid"),
+                    scenario_code=(
+                        Literal.__getitem__(scenario_code),
+                        Field(description="선택한 최상위 시나리오 코드"),
+                    ),
+                    detail_scenario_code=(
+                        Literal.__getitem__(detail_code),
+                        Field(description="선택한 세부 시나리오 코드"),
+                    ),
+                    parameters=(
+                        parameters_model,
+                        Field(
+                            description=(
+                                "선택한 세부 시나리오에서 허용된 파라미터만 추출"
+                            )
+                        ),
+                    ),
+                )
+            )
 
-    parameters_model = create_model(
-        f"{bundle.agent_code}Parameters",
-        __config__=ConfigDict(extra="forbid"),
-        **parameter_fields,
-    )
-    match_model = create_model(
-        f"{bundle.agent_code}ScenarioMatchOutput",
-        __config__=ConfigDict(extra="forbid"),
-        scenario_code=(
-            scenario_enum,
-            Field(description="선택한 최상위 시나리오 코드"),
-        ),
-        detail_scenario_code=(
-            detail_enum,
-            Field(description="선택한 세부 시나리오 코드"),
-        ),
-        parameters=(
-            parameters_model,
-            Field(description="질문에서 명시적으로 추출한 조회 파라미터"),
-        ),
-    )
+    match_union = Union.__getitem__(tuple(match_models))
+    discriminated_match = Annotated[
+        match_union,
+        Field(discriminator="detail_scenario_code"),
+    ]
     return create_model(
         f"{bundle.agent_code}ScenarioOutput",
         __config__=ConfigDict(extra="forbid"),
         matches=(
-            list[match_model],
+            list[discriminated_match],
             Field(
                 min_length=1,
                 max_length=len(detail_codes),
@@ -437,17 +556,64 @@ def _create_output_model(
 
 def _normalize_parameters(
     *,
-    raw: dict[str, str | None],
+    raw: dict[str, Any],
     manifest: dict[str, Any],
-) -> dict[str, str]:
+    detail: dict[str, Any],
+) -> dict[str, Any]:
     """LLM 누락값을 빈 문자열로 바꾸고 업무 기본값은 적용하지 않는다.
 
     날짜·코드 기본값, 필수값과 파라미터 우선순위는 MCP 도구마다 다르므로
-    ``app/mcp/payloads.py``에서 최종 payload를 만들 때 처리한다.
+    ``app/mcp/scenarios/*.py``의 해당 handler에서 최종 arguments를 만들 때
+    처리한다.
     """
 
-    normalized: dict[str, str] = {}
-    for name in manifest["parameter_definitions"]:
+    normalized: dict[str, Any] = {}
+    for name in _detail_parameter_names(manifest, detail):
+        definition = manifest["parameter_definitions"][name]
         value = raw.get(str(name))
+        if str(definition.get("value_type", "string")) == "string_list":
+            items = value if isinstance(value, list) else []
+            normalized_items: list[str] = []
+            seen: set[str] = set()
+            for item in items:
+                keyword = str(item).strip()
+                if not keyword or keyword in seen:
+                    continue
+                seen.add(keyword)
+                normalized_items.append(keyword)
+            normalized[str(name)] = normalized_items
+            continue
         normalized[str(name)] = "" if value is None else str(value).strip()
     return normalized
+
+
+def _detail_parameter_names(
+    manifest: dict[str, Any],
+    detail: dict[str, Any],
+) -> list[str]:
+    """한 detail이 LLM에서 추출하도록 허용된 파라미터 이름만 반환한다."""
+
+    configured = detail.get("parameters", [])
+    return [
+        str(name)
+        for name in configured
+        if str(name) in manifest["parameter_definitions"]
+    ]
+
+
+def _parse_interaction(detail: dict[str, Any]) -> ScenarioInteraction | None:
+    """manifest detail의 선택적 다단계 상호작용 선언을 모델로 변환한다."""
+
+    raw = detail.get("interaction")
+    if raw is None:
+        return None
+    return ScenarioInteraction.model_validate(raw)
+
+
+def _parse_mcp_workflow(detail: dict[str, Any]) -> ScenarioMcpWorkflow | None:
+    """manifest detail의 선택적 순차 MCP workflow 선언을 모델로 변환한다."""
+
+    raw = detail.get("mcp_workflow")
+    if raw is None:
+        return None
+    return ScenarioMcpWorkflow.model_validate(raw)

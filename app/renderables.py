@@ -91,9 +91,9 @@ def create_markdown_table(
     """열과 행만 받아 Markdown 테이블 문자열을 만든다."""
 
     normalized_columns, normalized_rows = _normalize_table(columns, rows)
-    header = "| " + " | ".join(
-        _markdown_cell(value) for value in normalized_columns
-    ) + " |"
+    header = (
+        "| " + " | ".join(_markdown_cell(value) for value in normalized_columns) + " |"
+    )
     separator = "| " + " | ".join("---" for _ in normalized_columns) + " |"
     body = [
         "| " + " | ".join(_markdown_cell(value) for value in row) + " |"
@@ -118,8 +118,7 @@ def create_html_table(
     body = "".join(
         "<tr>"
         + "".join(
-            f"<td>{escape(_display_text(value), quote=True)}</td>"
-            for value in row
+            f"<td>{escape(_display_text(value), quote=True)}</td>" for value in row
         )
         + "</tr>"
         for row in normalized_rows
@@ -152,8 +151,7 @@ def create_table_renderable(
         content = create_html_table(normalized_columns, normalized_rows)
     else:
         raise ValueError(
-            "table renderable format은 markdown 또는 html이어야 합니다: "
-            f"{format}"
+            f"table renderable format은 markdown 또는 html이어야 합니다: {format}"
         )
     return MessageRenderable(
         code=code,
@@ -230,8 +228,7 @@ def normalize_scenario_answer(
         renderables = [MessageRenderable.model_validate(raw_renderables)]
     elif isinstance(raw_renderables, Sequence):
         renderables = [
-            MessageRenderable.model_validate(item)
-            for item in raw_renderables
+            MessageRenderable.model_validate(item) for item in raw_renderables
         ]
     else:
         raise TypeError("renderables는 문자열, 객체 또는 객체 배열이어야 합니다.")
@@ -314,9 +311,7 @@ def _describe_shape(source: Any) -> dict[str, Any]:
             data = source.get("data")
             description["data_type"] = type(data).__name__
             if isinstance(data, Mapping):
-                description["data_keys"] = sorted(
-                    str(key) for key in data.keys()
-                )
+                description["data_keys"] = sorted(str(key) for key in data.keys())
     elif isinstance(source, list):
         description["length"] = len(source)
     elif isinstance(source, str):

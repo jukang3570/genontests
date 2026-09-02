@@ -164,11 +164,7 @@ def save_evaluation_report(
             label_latency,
             # 단계가 다르면 응답 속도와 판정 기준이 달라 추세를 함께 그릴 수
             # 없다. 같은 단계로 실행한 이력만 남긴다.
-            [
-                row
-                for row in history_rows
-                if (row.get("stage") or "full") == stage
-            ],
+            [row for row in history_rows if (row.get("stage") or "full") == stage],
         ),
         encoding="utf-8",
     )
@@ -192,9 +188,7 @@ def _unique_file_stem(run_dir: Path, dataset_name: str, stamp: str) -> str:
 
     stem = f"{dataset_name}_{stamp}"
     suffix = 2
-    while (run_dir / f"{stem}.json").exists() or (
-        run_dir / f"{stem}.svg"
-    ).exists():
+    while (run_dir / f"{stem}.json").exists() or (run_dir / f"{stem}.svg").exists():
         stem = f"{dataset_name}_{stamp}_{suffix}"
         suffix += 1
     return stem
@@ -207,9 +201,7 @@ def _append_history(path: Path, row: Mapping) -> None:
         with path.open("r", encoding="utf-8-sig", newline="") as history_file:
             existing_header = next(csv.reader(history_file), [])
         if existing_header != list(HISTORY_COLUMNS):
-            raise ValueError(
-                f"평가 이력 CSV 헤더가 현재 형식과 다릅니다: {path}"
-            )
+            raise ValueError(f"평가 이력 CSV 헤더가 현재 형식과 다릅니다: {path}")
     is_new = not path.exists()
     with path.open("a", encoding="utf-8-sig", newline="") as history_file:
         writer = csv.DictWriter(history_file, fieldnames=HISTORY_COLUMNS)
@@ -263,16 +255,21 @@ def _quality_panel(metrics: Mapping, x: int, y: int, w: int, h: int) -> list[str
         ("macro F1", float(metrics["macro_avg"]["f1"]), "#0f9f7a"),
         ("weighted F1", float(metrics["weighted_avg"]["f1"]), "#7c3aed"),
     ]
-    parts = [_panel(x, y, w, h), f'<text x="{x+20}" y="{y+30}" class="heading">Quality summary</text>']
+    parts = [
+        _panel(x, y, w, h),
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">Quality summary</text>',
+    ]
     chart_x, chart_y, chart_w = x + 120, y + 65, w - 155
     for index, (label, value, color) in enumerate(values):
         row_y = chart_y + index * 58
-        parts.extend([
-            f'<text x="{chart_x-10}" y="{row_y+17}" text-anchor="end" class="small">{label}</text>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="24" rx="4" fill="#e8edf3"/>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{chart_w*value:.1f}" height="24" rx="4" fill="{color}"/>',
-            f'<text x="{chart_x+chart_w*value+7:.1f}" y="{row_y+17}" class="value">{value:.4f}</text>',
-        ])
+        parts.extend(
+            [
+                f'<text x="{chart_x - 10}" y="{row_y + 17}" text-anchor="end" class="small">{label}</text>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="24" rx="4" fill="#e8edf3"/>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{chart_w * value:.1f}" height="24" rx="4" fill="{color}"/>',
+                f'<text x="{chart_x + chart_w * value + 7:.1f}" y="{row_y + 17}" class="value">{value:.4f}</text>',
+            ]
+        )
     return parts
 
 
@@ -284,21 +281,28 @@ def _label_panel(metrics: Mapping, x: int, y: int, w: int, h: int) -> list[str]:
         for label, values in metrics["per_label"].items()
         if int(values["support"]) > 0
     ]
-    parts = [_panel(x, y, w, h), f'<text x="{x+20}" y="{y+30}" class="heading">F1 by true label</text>']
+    parts = [
+        _panel(x, y, w, h),
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">F1 by true label</text>',
+    ]
     if not labels:
-        parts.append(f'<text x="{x+w/2}" y="{y+h/2}" text-anchor="middle">No classified rows</text>')
+        parts.append(
+            f'<text x="{x + w / 2}" y="{y + h / 2}" text-anchor="middle">No classified rows</text>'
+        )
         return parts
     chart_x, chart_y, chart_w = x + 175, y + 55, w - 215
     row_h = min(34, 190 / len(labels))
     for index, (label, values) in enumerate(labels):
         row_y = chart_y + index * row_h
         score = float(values["f1"])
-        parts.extend([
-            f'<text x="{chart_x-8}" y="{row_y+14}" text-anchor="end" class="small">{escape(str(label))} ({values["support"]})</text>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="18" rx="3" fill="#e8edf3"/>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{chart_w*score:.1f}" height="18" rx="3" fill="#0f9f7a"/>',
-            f'<text x="{chart_x+chart_w+6}" y="{row_y+14}" class="small">{score:.2f}</text>',
-        ])
+        parts.extend(
+            [
+                f'<text x="{chart_x - 8}" y="{row_y + 14}" text-anchor="end" class="small">{escape(str(label))} ({values["support"]})</text>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="18" rx="3" fill="#e8edf3"/>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{chart_w * score:.1f}" height="18" rx="3" fill="#0f9f7a"/>',
+                f'<text x="{chart_x + chart_w + 6}" y="{row_y + 14}" class="small">{score:.2f}</text>',
+            ]
+        )
     return parts
 
 
@@ -306,33 +310,52 @@ def _confusion_panel(metrics: Mapping, x: int, y: int, w: int, h: int) -> list[s
     """실제/예측 라벨 조합을 색 농도와 건수로 표시한다."""
 
     labels = [
-        label for label in metrics["labels"]
+        label
+        for label in metrics["labels"]
         if int(metrics["per_label"][label]["support"]) > 0
-        or any(metrics["confusion"].get(row, {}).get(label, 0) for row in metrics["labels"])
+        or any(
+            metrics["confusion"].get(row, {}).get(label, 0) for row in metrics["labels"]
+        )
     ]
-    parts = [_panel(x, y, w, h), f'<text x="{x+20}" y="{y+30}" class="heading">Confusion matrix · true rows / predicted columns</text>']
+    parts = [
+        _panel(x, y, w, h),
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">Confusion matrix · true rows / predicted columns</text>',
+    ]
     if not labels:
-        parts.append(f'<text x="{x+w/2}" y="{y+h/2}" text-anchor="middle">No classified rows</text>')
+        parts.append(
+            f'<text x="{x + w / 2}" y="{y + h / 2}" text-anchor="middle">No classified rows</text>'
+        )
         return parts
-    matrix = [[int(metrics["confusion"].get(true, {}).get(pred, 0)) for pred in labels] for true in labels]
+    matrix = [
+        [int(metrics["confusion"].get(true, {}).get(pred, 0)) for pred in labels]
+        for true in labels
+    ]
     max_count = max(max(row) for row in matrix) or 1
     cell = min(52, (w - 190) / len(labels), (h - 150) / len(labels))
     start_x, start_y = x + 165, y + 95
     for column, label in enumerate(labels):
-        parts.append(f'<text x="{start_x+(column+.5)*cell:.1f}" y="{start_y-8}" text-anchor="middle" class="small" transform="rotate(-35 {start_x+(column+.5)*cell:.1f} {start_y-8})">{escape(str(label))}</text>')
+        parts.append(
+            f'<text x="{start_x + (column + 0.5) * cell:.1f}" y="{start_y - 8}" text-anchor="middle" class="small" transform="rotate(-35 {start_x + (column + 0.5) * cell:.1f} {start_y - 8})">{escape(str(label))}</text>'
+        )
     for row, true_label in enumerate(labels):
-        parts.append(f'<text x="{start_x-8}" y="{start_y+(row+.5)*cell+4:.1f}" text-anchor="end" class="small">{escape(str(true_label))}</text>')
+        parts.append(
+            f'<text x="{start_x - 8}" y="{start_y + (row + 0.5) * cell + 4:.1f}" text-anchor="end" class="small">{escape(str(true_label))}</text>'
+        )
         for column, count in enumerate(matrix[row]):
             opacity = 0.12 + 0.78 * count / max_count
             cell_x, cell_y = start_x + column * cell, start_y + row * cell
-            parts.extend([
-                f'<rect x="{cell_x:.1f}" y="{cell_y:.1f}" width="{cell-2:.1f}" height="{cell-2:.1f}" fill="#2563eb" opacity="{opacity:.3f}"/>',
-                f'<text x="{cell_x+cell/2:.1f}" y="{cell_y+cell/2+4:.1f}" text-anchor="middle" class="value">{count}</text>',
-            ])
+            parts.extend(
+                [
+                    f'<rect x="{cell_x:.1f}" y="{cell_y:.1f}" width="{cell - 2:.1f}" height="{cell - 2:.1f}" fill="#2563eb" opacity="{opacity:.3f}"/>',
+                    f'<text x="{cell_x + cell / 2:.1f}" y="{cell_y + cell / 2 + 4:.1f}" text-anchor="middle" class="value">{count}</text>',
+                ]
+            )
     return parts
 
 
-def _latency_panel(timing: Mapping[str, float], x: int, y: int, w: int, h: int) -> list[str]:
+def _latency_panel(
+    timing: Mapping[str, float], x: int, y: int, w: int, h: int
+) -> list[str]:
     """행별 응답 속도의 분포를 최소·중앙·평균·p90·p95·최대로 표시한다."""
 
     rows = [
@@ -345,19 +368,21 @@ def _latency_panel(timing: Mapping[str, float], x: int, y: int, w: int, h: int) 
     ]
     parts = [
         _panel(x, y, w, h),
-        f'<text x="{x+20}" y="{y+30}" class="heading">Latency per row (seconds)</text>',
-        f'<text x="{x+20}" y="{y+50}" class="small">stdev={timing.get("latency_stdev_s", 0)}s · total={timing.get("latency_total_s", 0)}s · wall={timing.get("wall_s", 0)}s</text>',
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">Latency per row (seconds)</text>',
+        f'<text x="{x + 20}" y="{y + 50}" class="small">stdev={timing.get("latency_stdev_s", 0)}s · total={timing.get("latency_total_s", 0)}s · wall={timing.get("wall_s", 0)}s</text>',
     ]
     scale = max((value for _, value, _ in rows), default=0.0) or 1.0
     chart_x, chart_y, chart_w = x + 75, y + 66, w - 150
     for index, (label, value, color) in enumerate(rows):
         row_y = chart_y + index * 36
-        parts.extend([
-            f'<text x="{chart_x-10}" y="{row_y+15}" text-anchor="end" class="small">{label}</text>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="20" rx="3" fill="#e8edf3"/>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{max(chart_w*value/scale, 1):.1f}" height="20" rx="3" fill="{color}"/>',
-            f'<text x="{chart_x+chart_w+6}" y="{row_y+15}" class="small">{value:.2f}s</text>',
-        ])
+        parts.extend(
+            [
+                f'<text x="{chart_x - 10}" y="{row_y + 15}" text-anchor="end" class="small">{label}</text>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="20" rx="3" fill="#e8edf3"/>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{max(chart_w * value / scale, 1):.1f}" height="20" rx="3" fill="{color}"/>',
+                f'<text x="{chart_x + chart_w + 6}" y="{row_y + 15}" class="small">{value:.2f}s</text>',
+            ]
+        )
     return parts
 
 
@@ -370,9 +395,14 @@ def _latency_label_panel(
 ) -> list[str]:
     """의도 라벨별 평균 응답 속도를 느린 순으로 표시한다."""
 
-    parts = [_panel(x, y, w, h), f'<text x="{x+20}" y="{y+30}" class="heading">Mean latency by expected label</text>']
+    parts = [
+        _panel(x, y, w, h),
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">Mean latency by expected label</text>',
+    ]
     if not latency_by_label:
-        parts.append(f'<text x="{x+w/2}" y="{y+h/2}" text-anchor="middle">No latency samples</text>')
+        parts.append(
+            f'<text x="{x + w / 2}" y="{y + h / 2}" text-anchor="middle">No latency samples</text>'
+        )
         return parts
     # 이미 평균이 느린 순으로 정렬돼 있으므로 상위 구간만 보여 준다.
     entries = list(latency_by_label.items())[:7]
@@ -383,32 +413,47 @@ def _latency_label_panel(
     for index, (label, values) in enumerate(entries):
         row_y = chart_y + index * row_h
         mean_seconds = float(values["mean_s"])
-        parts.extend([
-            f'<text x="{chart_x-8}" y="{row_y+14}" text-anchor="end" class="small">{escape(str(label))} ({int(values["count"])})</text>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="18" rx="3" fill="#e8edf3"/>',
-            f'<rect x="{chart_x}" y="{row_y}" width="{max(chart_w*mean_seconds/scale, 1):.1f}" height="18" rx="3" fill="#2563eb"/>',
-            f'<text x="{chart_x+chart_w+6}" y="{row_y+14}" class="small">{mean_seconds:.2f}s (p95 {float(values["p95_s"]):.1f})</text>',
-        ])
+        parts.extend(
+            [
+                f'<text x="{chart_x - 8}" y="{row_y + 14}" text-anchor="end" class="small">{escape(str(label))} ({int(values["count"])})</text>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{chart_w}" height="18" rx="3" fill="#e8edf3"/>',
+                f'<rect x="{chart_x}" y="{row_y}" width="{max(chart_w * mean_seconds / scale, 1):.1f}" height="18" rx="3" fill="#2563eb"/>',
+                f'<text x="{chart_x + chart_w + 6}" y="{row_y + 14}" class="small">{mean_seconds:.2f}s (p95 {float(values["p95_s"]):.1f})</text>',
+            ]
+        )
     return parts
 
 
-def _history_panel(history: Sequence[Mapping[str, str]], x: int, y: int, w: int, h: int) -> list[str]:
+def _history_panel(
+    history: Sequence[Mapping[str, str]], x: int, y: int, w: int, h: int
+) -> list[str]:
     """history.csv에 누적된 실행별 품질 지표의 변화를 표시한다."""
 
-    parts = [_panel(x, y, w, h), f'<text x="{x+20}" y="{y+30}" class="heading">Quality trend · {len(history)} run(s) of same stage</text>']
+    parts = [
+        _panel(x, y, w, h),
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">Quality trend · {len(history)} run(s) of same stage</text>',
+    ]
     chart_x, chart_y = x + 65, y + 65
     chart_w, chart_h = w - 95, h - 115
     for tick in range(6):
         tick_y = chart_y + chart_h - chart_h * tick / 5
-        parts.extend([
-            f'<line x1="{chart_x}" y1="{tick_y:.1f}" x2="{chart_x+chart_w}" y2="{tick_y:.1f}" class="grid"/>',
-            f'<text x="{chart_x-8}" y="{tick_y+4:.1f}" text-anchor="end" class="small">{tick/5:.1f}</text>',
-        ])
-    parts.extend([
-        f'<line x1="{chart_x}" y1="{chart_y}" x2="{chart_x}" y2="{chart_y+chart_h}" class="axis"/>',
-        f'<line x1="{chart_x}" y1="{chart_y+chart_h}" x2="{chart_x+chart_w}" y2="{chart_y+chart_h}" class="axis"/>',
-    ])
-    series = [("accuracy", "#2563eb"), ("macro_f1", "#0f9f7a"), ("weighted_f1", "#7c3aed")]
+        parts.extend(
+            [
+                f'<line x1="{chart_x}" y1="{tick_y:.1f}" x2="{chart_x + chart_w}" y2="{tick_y:.1f}" class="grid"/>',
+                f'<text x="{chart_x - 8}" y="{tick_y + 4:.1f}" text-anchor="end" class="small">{tick / 5:.1f}</text>',
+            ]
+        )
+    parts.extend(
+        [
+            f'<line x1="{chart_x}" y1="{chart_y}" x2="{chart_x}" y2="{chart_y + chart_h}" class="axis"/>',
+            f'<line x1="{chart_x}" y1="{chart_y + chart_h}" x2="{chart_x + chart_w}" y2="{chart_y + chart_h}" class="axis"/>',
+        ]
+    )
+    series = [
+        ("accuracy", "#2563eb"),
+        ("macro_f1", "#0f9f7a"),
+        ("weighted_f1", "#7c3aed"),
+    ]
     denominator = max(1, len(history) - 1)
     for series_index, (name, color) in enumerate(series):
         points = []
@@ -421,12 +466,16 @@ def _history_panel(history: Sequence[Mapping[str, str]], x: int, y: int, w: int,
             px, py = points[0].split(",")
             parts.append(f'<circle cx="{px}" cy="{py}" r="5" fill="{color}"/>')
         else:
-            parts.append(f'<polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="3"/>')
+            parts.append(
+                f'<polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="3"/>'
+            )
         legend_x = chart_x + series_index * 150
-        parts.extend([
-            f'<line x1="{legend_x}" y1="{y+h-24}" x2="{legend_x+25}" y2="{y+h-24}" stroke="{color}" stroke-width="3"/>',
-            f'<text x="{legend_x+31}" y="{y+h-20}" class="small">{name}</text>',
-        ])
+        parts.extend(
+            [
+                f'<line x1="{legend_x}" y1="{y + h - 24}" x2="{legend_x + 25}" y2="{y + h - 24}" stroke="{color}" stroke-width="3"/>',
+                f'<text x="{legend_x + 31}" y="{y + h - 20}" class="small">{name}</text>',
+            ]
+        )
     return parts
 
 
@@ -439,28 +488,33 @@ def _latency_trend_panel(
 ) -> list[str]:
     """실행별 평균·p95·최대 응답 속도의 변화를 초 단위로 표시한다."""
 
-    parts = [_panel(x, y, w, h), f'<text x="{x+20}" y="{y+30}" class="heading">Latency trend · {len(history)} run(s) of same stage</text>']
+    parts = [
+        _panel(x, y, w, h),
+        f'<text x="{x + 20}" y="{y + 30}" class="heading">Latency trend · {len(history)} run(s) of same stage</text>',
+    ]
     series = [
         ("latency_mean_s", "#0f9f7a"),
         ("latency_p95_s", "#f59e0b"),
         ("latency_max_s", "#dc2626"),
     ]
-    values = [
-        [float(row.get(name) or 0) for row in history] for name, _ in series
-    ]
+    values = [[float(row.get(name) or 0) for row in history] for name, _ in series]
     scale = max((value for column in values for value in column), default=0.0) or 1.0
     chart_x, chart_y = x + 75, y + 50
     chart_w, chart_h = w - 110, h - 105
     for tick in range(5):
         tick_y = chart_y + chart_h - chart_h * tick / 4
-        parts.extend([
-            f'<line x1="{chart_x}" y1="{tick_y:.1f}" x2="{chart_x+chart_w}" y2="{tick_y:.1f}" class="grid"/>',
-            f'<text x="{chart_x-8}" y="{tick_y+4:.1f}" text-anchor="end" class="small">{scale*tick/4:.1f}s</text>',
-        ])
-    parts.extend([
-        f'<line x1="{chart_x}" y1="{chart_y}" x2="{chart_x}" y2="{chart_y+chart_h}" class="axis"/>',
-        f'<line x1="{chart_x}" y1="{chart_y+chart_h}" x2="{chart_x+chart_w}" y2="{chart_y+chart_h}" class="axis"/>',
-    ])
+        parts.extend(
+            [
+                f'<line x1="{chart_x}" y1="{tick_y:.1f}" x2="{chart_x + chart_w}" y2="{tick_y:.1f}" class="grid"/>',
+                f'<text x="{chart_x - 8}" y="{tick_y + 4:.1f}" text-anchor="end" class="small">{scale * tick / 4:.1f}s</text>',
+            ]
+        )
+    parts.extend(
+        [
+            f'<line x1="{chart_x}" y1="{chart_y}" x2="{chart_x}" y2="{chart_y + chart_h}" class="axis"/>',
+            f'<line x1="{chart_x}" y1="{chart_y + chart_h}" x2="{chart_x + chart_w}" y2="{chart_y + chart_h}" class="axis"/>',
+        ]
+    )
     denominator = max(1, len(history) - 1)
     for series_index, ((name, color), column) in enumerate(zip(series, values)):
         points = []
@@ -472,12 +526,16 @@ def _latency_trend_panel(
             px, py = points[0].split(",")
             parts.append(f'<circle cx="{px}" cy="{py}" r="5" fill="{color}"/>')
         elif points:
-            parts.append(f'<polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="3"/>')
+            parts.append(
+                f'<polyline points="{" ".join(points)}" fill="none" stroke="{color}" stroke-width="3"/>'
+            )
         legend_x = chart_x + series_index * 170
-        parts.extend([
-            f'<line x1="{legend_x}" y1="{y+h-22}" x2="{legend_x+25}" y2="{y+h-22}" stroke="{color}" stroke-width="3"/>',
-            f'<text x="{legend_x+31}" y="{y+h-18}" class="small">{name}</text>',
-        ])
+        parts.extend(
+            [
+                f'<line x1="{legend_x}" y1="{y + h - 22}" x2="{legend_x + 25}" y2="{y + h - 22}" stroke="{color}" stroke-width="3"/>',
+                f'<text x="{legend_x + 31}" y="{y + h - 18}" class="small">{name}</text>',
+            ]
+        )
     return parts
 
 

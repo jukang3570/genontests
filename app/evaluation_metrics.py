@@ -29,9 +29,7 @@ def compute_latency_metrics(
         "latency_stdev_s": round(stdev(values), 4) if count > 1 else 0.0,
         "latency_total_s": round(total, 4),
         "wall_s": round(wall_seconds, 4),
-        "throughput_qps": (
-            round(count / wall_seconds, 4) if wall_seconds > 0 else 0.0
-        ),
+        "throughput_qps": (round(count / wall_seconds, 4) if wall_seconds > 0 else 0.0),
     }
 
 
@@ -94,9 +92,7 @@ def compute_classification_metrics(
     true_counts = Counter(true for true, _ in pairs)
     predicted_counts = Counter(predicted for _, predicted in pairs)
     correct = sum(
-        count
-        for (true, predicted), count in pair_counts.items()
-        if true == predicted
+        count for (true, predicted), count in pair_counts.items() if true == predicted
     )
 
     raw_per_label: dict[str, dict[str, float | int]] = {}
@@ -134,9 +130,7 @@ def compute_classification_metrics(
     # 평가 데이터에 정답으로 한 번도 등장하지 않은 라벨은 macro/weighted
     # 평균에서 제외한다. 원본 모집인용 평가 코드와 동일한 계산 기준이다.
     present_labels = [
-        label
-        for label in normalized_labels
-        if raw_per_label[label]["support"] > 0
+        label for label in normalized_labels if raw_per_label[label]["support"] > 0
     ]
     # 0인 셀은 JSON 크기를 줄이기 위해 저장하지 않는 희소 딕셔너리 형태다.
     confusion: dict[str, dict[str, int]] = {}
@@ -208,7 +202,4 @@ def _percentile(sorted_values: Sequence[float], percentile: float) -> float:
     lower = int(position)
     upper = min(lower + 1, len(sorted_values) - 1)
     fraction = position - lower
-    return (
-        sorted_values[lower] * (1 - fraction)
-        + sorted_values[upper] * fraction
-    )
+    return sorted_values[lower] * (1 - fraction) + sorted_values[upper] * fraction

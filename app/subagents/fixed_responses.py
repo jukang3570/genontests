@@ -15,15 +15,11 @@ class SubagentFixedResponse:
 
 
 # 운영 커스터마이징 지점: 키는 (에이전트 코드, 세부 시나리오 코드)다.
-SUBAGENT_FIXED_RESPONSES: dict[
-    tuple[str, str], SubagentFixedResponse
-] = {
+SUBAGENT_FIXED_RESPONSES: dict[tuple[str, str], SubagentFixedResponse] = {
     (
         "PERFORMANCE_FEE",
         "PERFORMANCE_FEE_INFORMATION_INQUIRY",
-    ): SubagentFixedResponse(
-        message="자세한 내용은 지점을 통해 확인해 주세요."
-    ),
+    ): SubagentFixedResponse(message="자세한 내용은 지점을 통해 확인해 주세요."),
 }
 
 

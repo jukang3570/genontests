@@ -1,450 +1,33 @@
-"""조회형 MCP 결과에서 필요한 컬럼만 뽑아 시나리오별 답변을 만든다.
+"""함수형 MCP 결과 전처리·프런트 출력 어댑터.
 
-운영자가 수정할 핵심은 두 곳뿐이다.
-
-1. ``SCENARIO_QUERY_CONFIGS``에서 세부 시나리오별 사용할 ``columns``를 정한다.
-2. 연결된 ``answer_formatter(data, parameters, request_context)`` 함수에서
-   원하는 문장, 표, 합계와 조건문을 자유롭게 작성한다.
-
-HTTP 호출과 원본 응답 파싱은 ``client.py``, MCP 요청 payload는 ``payloads.py``가
-담당한다. 이 파일은 조회 결과 선택과 최종 답변 형식만 담당한다.
+활성 세부 시나리오는 중앙 columns 설정을 사용하지 않는다. 각 detail은
+``app/mcp/scenarios/<agent>.py``의 output 함수에서 원본 결과를 자유롭게 파싱하고
+전처리 데이터, 답변 본문, table/card/file renderable을 직접 만든다.
 """
 
-import json
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.mcp.models import McpExecutionResult
+from app.mcp.scenarios.contracts import ScenarioMcpOutputContext
+from app.mcp.scenarios.registry import get_scenario_handler_spec
+from app.mcp.workflow_handlers import get_workflow_result_formatter
 from app.observability import logger, timed
 from app.rag_policies import RAG_SCENARIO_POLICIES
-from app.renderables import (
-    ScenarioAnswer,
-    create_table_renderable,
-    extract_data_items,
-    extract_value,
-    normalize_scenario_answer,
-)
+from app.renderables import normalize_scenario_answer
+from app.scenario_actions import redact_scenario_action_parameters
 from app.subagents.models import SubagentResult
 
 
 QUERY_RESULT_FORMAT = "query.v1"
 RAG_RAW_RESULT_FORMAT = "raw.rag"
+RAG_PASSTHROUGH_SCENARIOS = frozenset(RAG_SCENARIO_POLICIES)
 
 
 class McpResultFormatError(ValueError):
-    """MCP 결과가 약속한 data 배열 형식이 아닐 때 발생한다."""
-
-
-# 포맷 함수가 받는 인자는 의도적으로 단순하게 유지한다.
-# data: columns에 지정한 objId만 남긴 MCP data 목록
-# parameters: 서브에이전트가 추출한 파라미터 전체
-# request_context: AccessToken을 제외한 사용자·세션·시나리오 정보
-QueryAnswerFormatter = Callable[
-    [list[dict[str, Any]], dict[str, Any], dict[str, Any]],
-    Any,
-]
-
-
-@dataclass(frozen=True)
-class ScenarioQueryConfig:
-    """세부 시나리오 하나의 조회 컬럼과 최종 답변 함수."""
-
-    columns: tuple[str, ...]
-    answer_formatter: QueryAnswerFormatter
-
-
-def filter_mcp_data(
-    structured_content: Any,
-    columns: Sequence[str],
-) -> list[dict[str, Any]]:
-    """structuredContent.data에서 지정한 objId 항목만 원래 순서로 반환한다.
-
-    같은 objId가 여러 번 등장해도 목록형 조회 결과일 수 있으므로 모두 유지한다.
-    반환값은 포맷 함수가 자유롭게 사용할 수 있도록 MCP 항목 dict를 보존한다.
-    """
-
-    try:
-        raw_data = extract_data_items(structured_content)
-    except ValueError as exc:
-        raise McpResultFormatError(str(exc)) from exc
-
-    selected_columns = {
-        str(column).strip() for column in columns if str(column).strip()
-    }
-    include_all_columns = "*" in selected_columns
-    selected_data: list[dict[str, Any]] = []
-    for index, item in enumerate(raw_data):
-        if not isinstance(item, Mapping):
-            raise McpResultFormatError(
-                f"structuredContent.data[{index}]는 object 형식이어야 합니다."
-            )
-        obj_id = item.get("objId")
-        if not isinstance(obj_id, str) or not obj_id.strip():
-            raise McpResultFormatError(
-                f"structuredContent.data[{index}].objId가 올바르지 않습니다."
-            )
-        if include_all_columns or obj_id.strip() in selected_columns:
-            selected_data.append(dict(item))
-    return selected_data
-
-
-def _value_text(value: Any) -> str:
-    """조회값을 한글이 보존되는 화면 문자열로 바꾼다."""
-
-    if value is None:
-        return ""
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(value, ensure_ascii=False, default=str)
-    return str(value)
-
-
-def _two_column_answer(
-    data: list[dict[str, Any]],
-    *,
-    title: str,
-    first_label: str,
-    second_label: str,
-) -> ScenarioAnswer:
-    """현재 test_tool 결과로 본문과 Markdown table renderable을 만든다."""
-
-    first_value = extract_value(data, "column1")
-    second_value = extract_value(data, "column2")
-    text = (
-        f"[{title}]\n"
-        f"- {first_label}: {_value_text(first_value)}\n"
-        f"- {second_label}: {_value_text(second_value)}"
-    )
-    table = create_table_renderable(
-        code="result-table",
-        title=title,
-        format="markdown",
-        columns=("항목", "값"),
-        rows=(
-            (first_label, first_value),
-            (second_label, second_value),
-        ),
-    )
-    return ScenarioAnswer(text=text, renderables=[table])
-
-
-# -------------------------------------------------------------------------
-# 세부 시나리오별 최종 답변 포맷 함수
-# -------------------------------------------------------------------------
-# 각 함수의 본문은 운영 업무에 맞게 자유롭게 수정한다.
-# data는 이미 columns 기준으로 필터링된 list[dict]이며, parameters와
-# request_context를 함께 사용해 조건문, 반복문, 합계, 표 형식을 만들 수 있다.
-
-
-def format_performance_summary_total(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """실적 종합 조회 최종 답변."""
-
-    rows = [
-        (item.get("objId", ""), item.get("objVal", ""))
-        for item in data
-    ]
-    text = "[실적 종합 조회 결과]"
-    if rows:
-        text += "\n" + "\n".join(
-            f"- {_value_text(name)}: {_value_text(value)}"
-            for name, value in rows
-        )
-    else:
-        text += "\n- 조회된 실적 항목이 없습니다."
-    return ScenarioAnswer(
-        text=text,
-        renderables=[
-            create_table_renderable(
-                code="result-table",
-                title="실적 종합 조회 결과",
-                format="markdown",
-                columns=("항목", "값"),
-                rows=rows,
-            )
-        ],
-    )
-
-
-def format_performance_fee_composite_score(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """PERFORMANCE_FEE 복합환산 점수 및 실적 답변."""
-
-    return _two_column_answer(
-        data,
-        title="복합환산 점수 및 실적 조회 결과",
-        first_label="복합환산점수",
-        second_label="실적건수",
-    )
-
-
-def format_performance_fee_composite_excluded(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """PERFORMANCE_FEE 환산 미반영 내역 답변."""
-
-    return _two_column_answer(
-        data,
-        title="환산 미반영 내역 조회 결과",
-        first_label="미반영내역",
-        second_label="미반영사유",
-    )
-
-
-def format_unregistered_member_summary(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """미등록 회원 현황 답변."""
-
-    return _two_column_answer(
-        data,
-        title="미등록 회원 현황 조회 결과",
-        first_label="유형",
-        second_label="건수",
-    )
-
-
-def format_unregistered_member_handoff_detail(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """타인수령 및 업체인계 상세 답변."""
-
-    return _two_column_answer(
-        data,
-        title="타인수령 및 업체인계 상세 조회 결과",
-        first_label="대상",
-        second_label="상세내역",
-    )
-
-
-def format_disposal_fee_summary(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """폐기 환산 및 회입 수수료 답변."""
-
-    return _two_column_answer(
-        data,
-        title="폐기 환산 및 회입 수수료 조회 결과",
-        first_label="폐기환산정보",
-        second_label="회입수수료",
-    )
-
-
-def format_disposal_fee_customer_detail(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """고객별 폐기 환산 상세 답변."""
-
-    return _two_column_answer(
-        data,
-        title="고객별 폐기 환산 상세 조회 결과",
-        first_label="폐기사유",
-        second_label="폐기상세",
-    )
-
-
-def format_fee_item_details(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """항목별 수수료 답변."""
-
-    return _two_column_answer(
-        data,
-        title="항목별 수수료 조회 결과",
-        first_label="수수료항목",
-        second_label="수수료금액",
-    )
-
-
-def format_fee_tax_net_payment(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """세금 및 실지급액 답변."""
-
-    return _two_column_answer(
-        data,
-        title="세금 및 실지급액 조회 결과",
-        first_label="세금·공제내역",
-        second_label="실지급액",
-    )
-
-
-def format_fee_12_month_trend(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """12개월 수수료 추이 답변."""
-
-    return _two_column_answer(
-        data,
-        title="12개월 수수료 추이 조회 결과",
-        first_label="기준월",
-        second_label="수수료금액",
-    )
-
-
-def format_withholding_tax(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """원천징수 내역 답변."""
-
-    return _two_column_answer(
-        data,
-        title="원천징수 내역 조회 결과",
-        first_label="원천징수항목",
-        second_label="원천징수금액",
-    )
-
-
-def format_rp_apartment_list(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """아파트관리비 RP 연결 가능 단지 답변."""
-
-    return _two_column_answer(
-        data,
-        title="아파트관리비 RP 연결 가능 단지 조회 결과",
-        first_label="아파트명",
-        second_label="주소",
-    )
-
-
-def format_rp_composite_score(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """RP 복합환산 점수 및 실적 답변."""
-
-    return _two_column_answer(
-        data,
-        title="복합환산 점수 및 실적 조회 결과",
-        first_label="복합환산점수",
-        second_label="실적건수",
-    )
-
-
-def format_rp_composite_excluded(
-    data: list[dict[str, Any]],
-    parameters: dict[str, Any],
-    request_context: dict[str, Any],
-) -> ScenarioAnswer:
-    """RP 환산 미반영 내역 답변."""
-
-    return _two_column_answer(
-        data,
-        title="환산 미반영 내역 조회 결과",
-        first_label="미반영내역",
-        second_label="미반영사유",
-    )
-
-
-# -------------------------------------------------------------------------
-# 세부 시나리오별 컬럼과 답변 함수 연결
-# -------------------------------------------------------------------------
-# 실제 MCP 컬럼이 바뀌면 columns만 수정한다.
-# 답변 모양이 바뀌면 연결된 format_* 함수 본문만 수정한다.
-SCENARIO_QUERY_CONFIGS: dict[tuple[str, str], ScenarioQueryConfig] = {
-    ("PERFORMANCE_FEE", "PERFORMANCE_SUMMARY_TOTAL"): ScenarioQueryConfig(
-        # 실제 EAI 응답의 objId 전체를 보존한다. 운영 명칭이 확정되면 필요한
-        # objId만 명시하고 format_performance_summary_total에서 한글 라벨을 매핑한다.
-        columns=("*",),
-        answer_formatter=format_performance_summary_total,
-    ),
-    ("PERFORMANCE_FEE", "COMPOSITE_CONVERSION_SCORE"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_performance_fee_composite_score,
-    ),
-    (
-        "PERFORMANCE_FEE",
-        "COMPOSITE_CONVERSION_EXCLUDED",
-    ): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_performance_fee_composite_excluded,
-    ),
-    ("PERFORMANCE_FEE", "UNREGISTERED_MEMBER_SUMMARY"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_unregistered_member_summary,
-    ),
-    (
-        "PERFORMANCE_FEE",
-        "UNREGISTERED_MEMBER_HANDOFF_DETAIL",
-    ): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_unregistered_member_handoff_detail,
-    ),
-    ("PERFORMANCE_FEE", "DISPOSAL_FEE_SUMMARY"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_disposal_fee_summary,
-    ),
-    (
-        "PERFORMANCE_FEE",
-        "DISPOSAL_FEE_CUSTOMER_DETAIL",
-    ): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_disposal_fee_customer_detail,
-    ),
-    ("PERFORMANCE_FEE", "FEE_ITEM_DETAILS"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_fee_item_details,
-    ),
-    ("PERFORMANCE_FEE", "FEE_TAX_NET_PAYMENT"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_fee_tax_net_payment,
-    ),
-    ("PERFORMANCE_FEE", "FEE_12_MONTH_TREND"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_fee_12_month_trend,
-    ),
-    ("PERFORMANCE_FEE", "WITHHOLDING_TAX"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_withholding_tax,
-    ),
-    ("RP", "APARTMENT_RP_LIST"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_rp_apartment_list,
-    ),
-    ("RP", "COMPOSITE_CONVERSION_SCORE"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_rp_composite_score,
-    ),
-    ("RP", "COMPOSITE_CONVERSION_EXCLUDED"): ScenarioQueryConfig(
-        columns=("column1", "column2"),
-        answer_formatter=format_rp_composite_excluded,
-    ),
-}
-
-
-# RAG 결과는 조회형 objId 형식과 다른 문서 목록이므로 세부 시나리오 단위로
-# 원본을 유지한다. RP처럼 RAG와 조회형 업무가 섞인 에이전트도 지원한다.
-RAG_PASSTHROUGH_SCENARIOS = frozenset(RAG_SCENARIO_POLICIES)
-# 이전 외부 import 호환용이다. 실제 분기는 위 세부 시나리오 표를 사용한다.
-RAG_PASSTHROUGH_AGENTS = frozenset({"QUALIFICATION"})
+    """세부 시나리오 결과 전처리 함수 계약이 맞지 않을 때 발생한다."""
 
 
 @timed("MCP 조회 결과 정제")
@@ -456,8 +39,9 @@ def adapt_mcp_result(
     session_id: str,
     thread_id: str,
     request_context: Mapping[str, Any],
+    workflow_results: Sequence[McpExecutionResult] = (),
 ) -> McpExecutionResult:
-    """컬럼 필터링 후 시나리오 전용 포맷 함수로 답변을 만든다."""
+    """세부 시나리오의 함수형 output handler를 실행해 프런트 결과를 만든다."""
 
     if (
         execution.outcome != "SUCCESS"
@@ -468,63 +52,198 @@ def adapt_mcp_result(
 
     agent_code = subagent.agent_code.upper()
     detail_code = subagent.detail_scenario_code
+    handler_spec = get_scenario_handler_spec(agent_code, detail_code)
+
+    if handler_spec is not None and handler_spec.output_handler is not None:
+        safe_request_context = _build_output_request_context(
+            request_context=request_context,
+            employee_id=employee_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            subagent=subagent,
+            execution=execution,
+            workflow_results=workflow_results,
+            output_handler_code=handler_spec.output_handler_code,
+        )
+        output_context = ScenarioMcpOutputContext(
+            execution=execution,
+            subagent=subagent,
+            employee_id=employee_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            request_context=safe_request_context,
+            workflow_results=tuple(workflow_results),
+            workflow=safe_request_context.get("mcp_workflow", {}),
+        )
+        output = handler_spec.output_handler(output_context)
+        answer = normalize_scenario_answer(
+            output.answer,
+            default_renderable_code=f"{agent_code}:{detail_code}:renderable",
+        )
+        if not answer.text.strip():
+            raise McpResultFormatError(
+                "시나리오 output handler가 비어 있는 답변을 반환했습니다: "
+                f"agent_code={agent_code}, detail_scenario_code={detail_code}"
+            )
+        renderables = _serialize_renderables(
+            answer.renderables,
+            agent_code=agent_code,
+            scenario_code=subagent.scenario_code,
+            detail_code=detail_code,
+        )
+        output_code = (
+            handler_spec.output_handler_code
+            or f"{handler_spec.output_handler.__module__}:"
+            f"{handler_spec.output_handler.__name__}"
+        )
+        formatted_result = {
+            "format": output.result_format or QUERY_RESULT_FORMAT,
+            "adapter_code": f"{agent_code}:{detail_code}:function",
+            "result_formatter_code": output_code,
+            "output_handler_code": output_code,
+            "data": output.data,
+            "parameters": redact_scenario_action_parameters(
+                agent_code,
+                detail_code,
+                subagent.parameters,
+            ),
+            "request_context": safe_request_context,
+            "answer_text": answer.text,
+            "renderables": renderables,
+            "metadata": dict(output.metadata),
+        }
+        logger.info(
+            "======== MCP 함수형 결과 전처리 완료 | 에이전트=%s | "
+            "세부시나리오=%s | outputHandler=%s | 전처리결과=%s | "
+            "답변=%s | 확장데이터개수=%d",
+            agent_code,
+            detail_code,
+            output_code,
+            output.data,
+            answer.text,
+            len(renderables),
+        )
+        return execution.model_copy(
+            update={
+                "result_format": output.result_format or QUERY_RESULT_FORMAT,
+                "formatted_result": formatted_result,
+            }
+        )
+
+    # output handler가 없는 interaction detail의 legacy fallback이다. 새 detail은
+    # registry에 output_handler를 연결하면 이 분기보다 우선한다.
+    if (
+        subagent.interaction is not None
+        and subagent.interaction.tool.result_mode == "success_message"
+    ):
+        sensitive_parameters = {
+            step.parameter_name for step in subagent.interaction.steps if step.sensitive
+        }
+        safe_parameters = {
+            name: "<민감값 마스킹>" if name in sensitive_parameters else value
+            for name, value in subagent.parameters.items()
+        }
+        safe_parameters = redact_scenario_action_parameters(
+            agent_code,
+            detail_code,
+            safe_parameters,
+        )
+        return execution.model_copy(
+            update={
+                "result_format": QUERY_RESULT_FORMAT,
+                "formatted_result": {
+                    "format": QUERY_RESULT_FORMAT,
+                    "adapter_code": f"{agent_code}:{detail_code}:interaction-fallback",
+                    "data": {"raw_result": execution.result},
+                    "parameters": safe_parameters,
+                    "request_context": {},
+                    "answer_text": subagent.interaction.tool.success_message,
+                    "renderables": [],
+                    "metadata": {},
+                },
+            }
+        )
+
     if (agent_code, detail_code) in RAG_PASSTHROUGH_SCENARIOS:
         logger.info(
-            "======== MCP 결과 정제 생략 | 에이전트=%s | "
+            "======== MCP 결과 전처리 생략 | 에이전트=%s | "
             "세부시나리오=%s | 결과형식=%s | 이유=RAG원본유지",
             agent_code,
             detail_code,
             RAG_RAW_RESULT_FORMAT,
         )
+        return execution.model_copy(update={"result_format": RAG_RAW_RESULT_FORMAT})
+
+    # explicit legacy manifest workflow만 기존 formatter를 유지한다. 활성
+    # 함수형 detail은 registry output_handler를 사용하며 columns 표가 없다.
+    if subagent.mcp_workflow is not None and subagent.mcp_workflow.result_formatter:
+        formatter = get_workflow_result_formatter(subagent.mcp_workflow.result_formatter)
+        safe_request_context = _build_output_request_context(
+            request_context=request_context,
+            employee_id=employee_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            subagent=subagent,
+            execution=execution,
+            workflow_results=workflow_results,
+            output_handler_code=subagent.mcp_workflow.result_formatter,
+        )
+        answer = normalize_scenario_answer(
+            formatter([], dict(subagent.parameters), safe_request_context),
+            default_renderable_code=f"{agent_code}:{detail_code}:legacy",
+        )
         return execution.model_copy(
-            update={"result_format": RAG_RAW_RESULT_FORMAT}
+            update={
+                "result_format": QUERY_RESULT_FORMAT,
+                "formatted_result": {
+                    "format": QUERY_RESULT_FORMAT,
+                    "adapter_code": f"{agent_code}:{detail_code}:legacy-workflow",
+                    "result_formatter_code": subagent.mcp_workflow.result_formatter,
+                    "data": execution.result,
+                    "parameters": redact_scenario_action_parameters(
+                        agent_code,
+                        detail_code,
+                        subagent.parameters,
+                    ),
+                    "request_context": safe_request_context,
+                    "answer_text": answer.text,
+                    "renderables": _serialize_renderables(
+                        answer.renderables,
+                        agent_code=agent_code,
+                        scenario_code=subagent.scenario_code,
+                        detail_code=detail_code,
+                    ),
+                    "metadata": {},
+                },
+            }
         )
 
-    key = (agent_code, detail_code)
-    config = SCENARIO_QUERY_CONFIGS.get(key)
-    if config is None:
-        raise McpResultFormatError(
-            "조회형 세부 시나리오 설정이 없습니다: "
-            f"agent_code={agent_code}, detail_scenario_code={detail_code}. "
-            "app/mcp/result_adapters.py의 SCENARIO_QUERY_CONFIGS를 확인하세요."
-        )
-
-    selected_data = filter_mcp_data(execution.result, config.columns)
-    parameters = dict(subagent.parameters)
-    safe_request_context = _build_formatter_request_context(
-        request_context=request_context,
-        employee_id=employee_id,
-        session_id=session_id,
-        thread_id=thread_id,
-        subagent=subagent,
+    raise McpResultFormatError(
+        "MCP 결과 output handler가 등록되지 않았습니다: "
+        f"agent_code={agent_code}, detail_scenario_code={detail_code}. "
+        "app/mcp/scenarios/registry.py에 output_handler를 연결하세요."
     )
-    scenario_answer = normalize_scenario_answer(
-        config.answer_formatter(
-            selected_data,
-            parameters,
-            safe_request_context,
-        ),
-        default_renderable_code=f"{agent_code}:{detail_code}:table",
-    )
-    answer_text = scenario_answer.text
-    if not isinstance(answer_text, str) or not answer_text.strip():
-        raise McpResultFormatError(
-            "시나리오 답변 포맷 함수가 비어 있는 문자열을 반환했습니다: "
-            f"agent_code={agent_code}, detail_scenario_code={detail_code}"
-        )
 
-    renderables = []
-    for renderable in scenario_answer.renderables:
+
+def _serialize_renderables(
+    renderables: Sequence[Any],
+    *,
+    agent_code: str,
+    scenario_code: str,
+    detail_code: str,
+) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for renderable in renderables:
         renderable_metadata = {
             **renderable.metadata,
             "agent_code": agent_code,
-            "scenario_code": subagent.scenario_code,
+            "scenario_code": scenario_code,
             "detail_scenario_code": detail_code,
         }
         renderable_code = renderable.code
         if ":" not in renderable_code:
             renderable_code = f"{agent_code}:{detail_code}:{renderable_code}"
-        renderables.append(
+        serialized.append(
             renderable.model_copy(
                 update={
                     "code": renderable_code,
@@ -532,51 +251,26 @@ def adapt_mcp_result(
                 }
             ).model_dump(mode="json")
         )
-
-    formatted_result = {
-        "format": QUERY_RESULT_FORMAT,
-        "adapter_code": f"{agent_code}:{detail_code}",
-        "columns": list(config.columns),
-        "data": selected_data,
-        "parameters": parameters,
-        "request_context": safe_request_context,
-        "answer_text": answer_text,
-        "renderables": renderables,
-    }
-    logger.info(
-        "======== MCP 조회 결과 정제 완료 | 에이전트=%s | "
-        "세부시나리오=%s | 결과형식=%s | 선택컬럼=%s | "
-        "정제데이터=%s | 답변=%s | 확장데이터개수=%d",
-        agent_code,
-        detail_code,
-        QUERY_RESULT_FORMAT,
-        list(config.columns),
-        selected_data,
-        answer_text,
-        len(renderables),
-    )
-    return execution.model_copy(
-        update={
-            "result_format": QUERY_RESULT_FORMAT,
-            "formatted_result": formatted_result,
-        }
-    )
+    return serialized
 
 
-def _build_formatter_request_context(
+def _build_output_request_context(
     *,
     request_context: Mapping[str, Any],
     employee_id: str,
     session_id: str,
     thread_id: str,
     subagent: SubagentResult,
+    execution: McpExecutionResult,
+    workflow_results: Sequence[McpExecutionResult] = (),
+    output_handler_code: str | None = None,
 ) -> dict[str, Any]:
-    """포맷 함수에 전달할 요청 context를 만들되 AccessToken은 제외한다."""
+    """출력 함수에 access token을 제외한 요청 정보와 전체 MCP 원장을 전달한다."""
 
     user = request_context.get("user")
     if not isinstance(user, Mapping):
         user = {}
-    return {
+    output_context: dict[str, Any] = {
         "employee_id": employee_id,
         "session_id": session_id,
         "thread_id": thread_id,
@@ -593,4 +287,49 @@ def _build_formatter_request_context(
             "deptcode": user.get("deptcode"),
             "deptname": user.get("deptname"),
         },
+    }
+    if subagent.mcp_workflow is not None or workflow_results:
+        serialized_results = [
+            _workflow_result_for_output(item) for item in workflow_results
+        ]
+        by_step: dict[str, list[dict[str, Any]]] = {}
+        for item in serialized_results:
+            by_step.setdefault(str(item["step_code"]), []).append(item)
+        terminal_result = execution.result if isinstance(execution.result, Mapping) else {}
+        output_context["mcp_workflow"] = {
+            "output_handler": output_handler_code,
+            "handler_code": execution.workflow_handler_code,
+            "fanout": terminal_result.get("fanout"),
+            "execution": terminal_result.get("execution"),
+            "batches": terminal_result.get("batches", []),
+            "results": serialized_results,
+            "by_step": by_step,
+        }
+    return output_context
+
+
+def _workflow_result_for_output(
+    execution: McpExecutionResult,
+) -> dict[str, Any]:
+    """출력 함수가 다단계 원장을 안전하게 읽을 수 있도록 직렬화한다."""
+
+    return {
+        "step_code": execution.workflow_step_code,
+        "step_index": execution.workflow_step_index,
+        "step_count": execution.workflow_step_count,
+        "tool_name": execution.tool_name,
+        "request_id": execution.request_id,
+        "arguments": execution.arguments,
+        "succeeded": execution.succeeded,
+        "outcome": execution.outcome,
+        "business_code": execution.business_code,
+        "result": execution.result,
+        "error": execution.error,
+        "execution_mode": execution.workflow_execution_mode,
+        "item_index": execution.workflow_item_index,
+        "item_count": execution.workflow_item_count,
+        "source_step_code": execution.workflow_source_step_code,
+        "is_aggregate": execution.workflow_is_aggregate,
+        "input_mapper": execution.workflow_input_mapper_code,
+        "handler_code": execution.workflow_handler_code,
     }

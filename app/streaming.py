@@ -22,7 +22,7 @@ def split_text(text: str, chunk_size: int = 16) -> Iterator[str]:
     if chunk_size < 1:
         raise ValueError("chunk_size는 1 이상이어야 합니다.")
     for start in range(0, len(text), chunk_size):
-        yield text[start:start + chunk_size]
+        yield text[start : start + chunk_size]
 
 
 def build_action_event(
@@ -40,19 +40,38 @@ def build_action_event(
     for field in source.get("fields", []):
         if not isinstance(field, dict):
             continue
-        inputs.append(
+        item = {
+            "code": field.get("name"),
+            "label": field.get("label"),
+            "type": field.get("type", "text"),
+            "required": bool(field.get("required", False)),
+        }
+        optional_fields = {
+            "expectedValue": field.get("expected_value"),
+            "pattern": field.get("pattern"),
+            "minLength": field.get("min_length"),
+            "maxLength": field.get("max_length"),
+            "allowedValues": field.get("allowed_values"),
+        }
+        item.update(
             {
-                "code": field.get("name"),
-                "label": field.get("label"),
-                "type": field.get("type", "text"),
-                "required": bool(field.get("required", False)),
-                "expectedValue": field.get("expected_value"),
+                key: value
+                for key, value in optional_fields.items()
+                if value is not None
             }
         )
-    return {
-        "code": source.get("type"),
+        if field.get("sensitive"):
+            item["sensitive"] = True
+        inputs.append(item)
+    event = {
+        "code": source.get("action_code") or source.get("type"),
         "thread_id": thread_id,
         "message": source.get("message"),
         "inputs": inputs,
-        "errors": source.get("errors", {}),
     }
+    errors = source.get("errors")
+    if isinstance(errors, dict) and errors:
+        event["errors"] = errors
+    # 새 프론트 필드가 실제로 필요해질 때만 이 whitelist에 명시적으로 추가한다.
+    # interrupt.context, MCP 원본, handler 내부 상태는 운영 action에 노출하지 않는다.
+    return event

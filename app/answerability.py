@@ -58,7 +58,7 @@ class GenosAnswerabilityService:
             model=settings.genos_model,
             api_key=settings.genos_bearer_token,
             temperature=0,
-            max_retries=settings.llm_max_retries,
+            **settings.llm_client_options,
         )
         self._chain = llm.with_structured_output(
             AnswerabilityDecision,
@@ -95,8 +95,7 @@ class GenosAnswerabilityService:
                     SystemMessage(content=self._system_prompt),
                     HumanMessage(
                         content=(
-                            f"사용자 질문:\n{query}\n\n"
-                            f"검색 문서:\n{document_text}"
+                            f"사용자 질문:\n{query}\n\n검색 문서:\n{document_text}"
                         )
                     ),
                 ]
@@ -105,13 +104,11 @@ class GenosAnswerabilityService:
             log_failure_diagnostic(
                 stage="문서 답변 가능성 LLM 판별",
                 code_location=(
-                    "app/answerability.py:"
-                    "GenosAnswerabilityService.is_answerable"
+                    "app/answerability.py:GenosAnswerabilityService.is_answerable"
                 ),
                 exc=exc,
                 likely_cause=(
-                    "GenOS 연결·인증·모델 오류 또는 json_schema 구조화 출력 "
-                    "미지원"
+                    "GenOS 연결·인증·모델 오류 또는 json_schema 구조화 출력 미지원"
                 ),
                 corrective_action=(
                     "GenOS serving의 structured output 지원 여부와 GENOS_* "

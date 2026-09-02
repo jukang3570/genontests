@@ -81,9 +81,7 @@ RAG_SCENARIO_POLICIES: dict[tuple[str, str], RagScenarioPolicy] = {
     ("QUALIFICATION", "FOREIGNER_QUALIFICATION"): _policy(
         retrieval=0.62, reranking=0.52
     ),
-    ("QUALIFICATION", "MINOR_QUALIFICATION"): _policy(
-        retrieval=0.62, reranking=0.52
-    ),
+    ("QUALIFICATION", "MINOR_QUALIFICATION"): _policy(retrieval=0.62, reranking=0.52),
     ("QUALIFICATION", "FAMILY_CARD_ISSUANCE_QUALIFICATION"): _policy(
         retrieval=0.60, reranking=0.50
     ),

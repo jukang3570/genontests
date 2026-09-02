@@ -7,7 +7,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
-from app.observability import logger
+from app.observability import (
+    emit_developer_trace,
+    error_code_for_exception,
+    logger,
+)
 
 
 CSV_COLUMNS = (
@@ -74,6 +78,12 @@ class EmptyTraceRecorder:
         elapsed_seconds: float | None = None,
         error: Exception | None = None,
     ) -> None:
+        _emit_developer_state_trace(
+            stage=stage,
+            state=state,
+            elapsed_seconds=elapsed_seconds,
+            error=error,
+        )
         return None
 
 
@@ -95,6 +105,13 @@ class LocalCsvTraceRecorder:
         error: Exception | None = None,
     ) -> None:
         """기록 실패를 채팅 오류로 전파하지 않고 로그만 남긴다."""
+
+        _emit_developer_state_trace(
+            stage=stage,
+            state=state,
+            elapsed_seconds=elapsed_seconds,
+            error=error,
+        )
 
         try:
             thread_id = str(state.get("thread_id") or "thread-id-없음")
@@ -127,9 +144,7 @@ class LocalCsvTraceRecorder:
                 # thread_id 한 행을 갱신해야 하므로 전체 파일을 임시 파일에 쓴 뒤
                 # 교체한다. 로컬 진단 파일이 중간 상태로 남는 위험을 줄여 준다.
                 temporary_path = file_path.with_suffix(".tmp")
-                with temporary_path.open(
-                    "w", encoding="utf-8-sig", newline=""
-                ) as file:
+                with temporary_path.open("w", encoding="utf-8-sig", newline="") as file:
                     writer = csv.DictWriter(file, fieldnames=CSV_COLUMNS)
                     writer.writeheader()
                     writer.writerows(rows)
@@ -147,6 +162,347 @@ class LocalCsvTraceRecorder:
                 type(exc).__name__,
                 exc,
             )
+
+
+_STATE_TRACE_SOURCES: dict[str, tuple[str, str, str]] = {
+    "요청도착": (
+        "app/graph.py",
+        "MasterIntentGraph.start",
+        "최초 graph input_state 구성은 app/graph.py의 start를 수정하세요.",
+    ),
+    "HITL재진입": (
+        "app/graph.py",
+        "MasterIntentGraph.resume",
+        "HITL 복원 state와 현재 요청 병합은 app/graph.py의 resume를 수정하세요.",
+    ),
+    "대화이력조회완료": (
+        "app/graph.py",
+        "MasterIntentGraph._load_history",
+        "조회 범위·개수는 app/graph.py의 _load_history와 app/history.py를 수정하세요.",
+    ),
+    "마스터의도분류완료": (
+        "app/graph.py",
+        "MasterIntentGraph._classify_intent",
+        "보정 질문과 1차 분류는 app/classifier.py 및 prompts/intent-classification을 수정하세요.",
+    ),
+    "마스터의도분류오류": (
+        "app/graph.py",
+        "MasterIntentGraph._classify_intent",
+        "마스터 LLM 요청·구조화 결과는 app/classifier.py를 확인하세요.",
+    ),
+    "추천질문긍정후속연결": (
+        "app/graph.py",
+        "MasterIntentGraph._classify_intent",
+        "추천질문 후속 문장 연결은 app/recommended_questions.py와 app/graph.py를 수정하세요.",
+    ),
+    "추천질문긍정대상재확인": (
+        "app/graph.py",
+        "MasterIntentGraph._classify_intent",
+        "복수 추천질문 확인 정책은 app/recommended_questions.py와 app/graph.py를 수정하세요.",
+    ),
+    "에이전트비교생략": (
+        "app/graph.py",
+        "MasterIntentGraph._verify_selection",
+        "프론트 agent_code 비교 정책은 app/graph.py의 _verify_selection을 수정하세요.",
+    ),
+    "에이전트코드일치": (
+        "app/graph.py",
+        "MasterIntentGraph._verify_selection",
+        "프론트 agent_code 비교 정책은 app/graph.py의 _verify_selection을 수정하세요.",
+    ),
+    "HITL입력요청": (
+        "app/graph.py",
+        "MasterIntentGraph._verify_selection",
+        "에이전트 불일치 action은 app/graph.py와 app/hitl.py를 수정하세요.",
+    ),
+    "서브에이전트의도분류완료": (
+        "app/graph.py",
+        "MasterIntentGraph._run_subagent",
+        "세부 시나리오와 추출 파라미터는 app/subagents/router.py 및 prompts/subagents를 수정하세요.",
+    ),
+    "시나리오의도분류완료": (
+        "app/subagents/router.py",
+        "ScenarioSubagent.classify",
+        "시나리오 명세·파라미터는 해당 prompts/subagents manifest와 시나리오 파일을 수정하세요.",
+    ),
+    "서브에이전트의도분류오류": (
+        "app/graph.py",
+        "MasterIntentGraph._run_subagent",
+        "서브에이전트 LLM 및 구조화 출력은 app/subagents/router.py를 확인하세요.",
+    ),
+    "MCP파라미터입력요청": (
+        "app/graph.py",
+        "MasterIntentGraph._call_mcp",
+        "필수 MCP 파라미터는 app/mcp/scenarios handler, 사용자 입력 순서는 시나리오 interaction을 수정하세요.",
+    ),
+    "MCP도구선택완료": (
+        "app/graph.py",
+        "MasterIntentGraph._call_mcp",
+        "도구명과 요청 arguments는 handlerCode에 연결된 app/mcp/scenarios 함수를 수정하세요.",
+    ),
+    "MCP도구호출완료": (
+        "app/mcp/client.py",
+        "GenosMcpToolExecutor.execute",
+        "MCP 호출·응답 파싱은 app/mcp/client.py, 정제 출력은 app/mcp/result_adapters.py를 수정하세요.",
+    ),
+    "MCP워크플로단계완료": (
+        "app/graph.py",
+        "MasterIntentGraph._call_mcp",
+        "step 순서·중단 정책은 app/graph.py, step arguments는 manifest의 mcp_workflow를 수정하세요.",
+    ),
+    "MCP워크플로반복호출완료": (
+        "app/graph.py",
+        "MasterIntentGraph._call_mcp",
+        "fan-out 항목 추출은 manifest execution, 항목별 arguments는 current_item source를 확인하세요.",
+    ),
+    "MCP워크플로입력매핑완료": (
+        "app/mcp/workflow_handlers.py",
+        "build_mapped_step_arguments",
+        "mapper code는 manifest input_mapper, 실제 0~N arguments 변환은 workflow_handlers.py registry 함수를 확인하세요.",
+    ),
+    "MCP워크플로입력매핑오류": (
+        "app/mcp/workflow_handlers.py",
+        "build_mapped_step_arguments",
+        "manifest input_mapper code, 이전 step raw result 구조와 mapper 반환 arguments 배열을 확인하세요.",
+    ),
+    "MCP워크플로매퍼호출완료": (
+        "app/graph.py",
+        "MasterIntentGraph._call_mcp",
+        "호출별 안전한 arguments와 결과는 이 카드, 변환 규칙은 workflow_input_mapper_code에 연결된 함수를 확인하세요.",
+    ),
+    "MCP워크플로결과집계완료": (
+        "app/mcp/workflow.py",
+        "aggregate_fanout_results",
+        "병합 data/batches/부분실패 정책은 app/mcp/workflow.py, 최종 표현은 result_adapters.py formatter를 수정하세요.",
+    ),
+    "MCP함수핸들러시작": (
+        "app/mcp/scenarios/registry.py",
+        "run_scenario_handler",
+        "handler registry 연결과 실제 함수 위치는 mcp_handler_trace.codeLocation을 확인하세요.",
+    ),
+    "MCP함수호출완료": (
+        "app/mcp/scenario_runtime.py",
+        "ScenarioMcpHandlerContext.call",
+        "도구명·arguments는 표시된 handlerCode에 연결된 app/mcp/scenarios 함수에서 수정하세요.",
+    ),
+    "MCP함수다중호출완료": (
+        "app/mcp/scenario_runtime.py",
+        "ScenarioMcpHandlerContext.call_many",
+        "N개 arguments 생성은 시나리오 함수, 공통 반복/중단은 call_many를 수정하세요.",
+    ),
+    "MCP함수다중결과집계완료": (
+        "app/mcp/scenario_runtime.py",
+        "ScenarioMcpHandlerContext.call_many",
+        "호출별 batches와 병합 data는 runtime 집계, 최종 업무 변환은 시나리오 formatter를 수정하세요.",
+    ),
+    "MCP함수페이지호출완료": (
+        "app/mcp/scenario_runtime.py",
+        "ScenarioMcpHandlerContext.paginate",
+        "페이지 arguments와 원본 결과를 확인하고 해당 도구의 next_arguments 함수에서 key 규칙을 수정하세요.",
+    ),
+    "MCP함수페이지판정완료": (
+        "app/mcp/scenario_runtime.py",
+        "ScenarioMcpHandlerContext.paginate",
+        "hasNext 판정은 공통 runtime이 호출한 도구별 next_arguments callback을 수정하세요.",
+    ),
+    "MCP함수페이지결과집계완료": (
+        "app/mcp/scenario_runtime.py",
+        "ScenarioMcpHandlerContext.paginate",
+        "execution.stopReason/pageCount와 batches를 확인하고 max_pages 또는 next-key 함수를 수정하세요.",
+    ),
+    "MCP함수핸들러완료": (
+        "app/mcp/scenarios/registry.py",
+        "run_scenario_handler",
+        "terminal step과 전체 호출 흐름은 handlerCode에 연결된 Python 함수를 수정하세요.",
+    ),
+    "MCP함수핸들러오류": (
+        "app/mcp/scenarios/registry.py",
+        "run_scenario_handler",
+        "error와 마지막 성공 원장을 확인한 뒤 handlerCode의 Python 함수/결과 schema를 수정하세요.",
+    ),
+    "MCP함수결과전처리완료": (
+        "app/mcp/result_adapters.py",
+        "adapt_mcp_result",
+        "outputHandlerCode에 연결된 app/mcp/scenarios 함수에서 원본 결과 파싱, 전처리 data, 답변과 renderable을 수정하세요.",
+    ),
+    "MCP도구호출오류": (
+        "app/graph.py",
+        "MasterIntentGraph._call_mcp",
+        "payload, HTTP 응답 파싱과 결과 adapter를 순서대로 확인하세요.",
+    ),
+    "요청처리완료": (
+        "app/graph.py",
+        "MasterIntentGraph._to_result",
+        "최종 graph state 변환은 app/graph.py의 _to_result를 수정하세요.",
+    ),
+}
+
+
+def _emit_developer_state_trace(
+    *,
+    stage: str,
+    state: Mapping[str, Any],
+    elapsed_seconds: float | None,
+    error: Exception | None,
+) -> None:
+    """CSV와 동일한 graph state를 debug SSE용으로 안전하게 복제한다."""
+
+    source_file, source_function, hint = _STATE_TRACE_SOURCES.get(
+        stage,
+        (
+            "app/graph.py",
+            "MasterIntentGraph",
+            "이 state 단계명을 app/graph.py에서 검색해 해당 노드를 수정하세요.",
+        ),
+    )
+    safe_state = _sanitize_developer_value(dict(state))
+    details = {
+        "stateKeys": sorted(str(key) for key in state),
+        "focus": _developer_state_focus(safe_state),
+        "state": safe_state,
+    }
+    payload: dict[str, Any] = {
+        "kind": "state_transition",
+        "stageCode": f"STATE::{stage}",
+        "stage": stage,
+        "phase": "FAILED" if error is not None else "STATE",
+        "source": {
+            "file": source_file,
+            "function": source_function,
+            "line": None,
+        },
+        "durationMs": round((elapsed_seconds or 0.0) * 1000, 3),
+        "details": details,
+        "customizationHint": hint,
+    }
+    if error is not None:
+        payload["error"] = {
+            "code": error_code_for_exception(error),
+            "type": type(error).__name__,
+            "message": str(error),
+        }
+    emit_developer_trace(payload)
+
+
+def _developer_state_focus(state: Any) -> dict[str, Any]:
+    """목업 상단에서 바로 볼 질문·이력·분류·MCP 핵심 값을 뽑는다."""
+
+    if not isinstance(state, Mapping):
+        return {}
+    classification = _mapping(state.get("classification"))
+    subagent = _mapping(state.get("subagent"))
+    matches = [
+        _mapping(item)
+        for item in subagent.get("matches", [])
+        if isinstance(item, Mapping)
+    ]
+    mcp_results = [
+        _mapping(item)
+        for item in state.get("mcp_results", [])
+        if isinstance(item, Mapping)
+    ]
+    workflow_results = [
+        _mapping(item)
+        for item in state.get("mcp_workflow_results", [])
+        if isinstance(item, Mapping)
+    ]
+    request_results = (
+        [item for item in workflow_results if not item.get("workflow_is_aggregate")]
+        or mcp_results
+    )
+    return {
+        "originalQuestion": state.get("message"),
+        "conversationHistory": state.get("history", []),
+        "refinedQuestion": classification.get("refined_query"),
+        "classification": classification or None,
+        "scenarioMatches": [
+            {
+                "scenarioCode": item.get("scenario_code"),
+                "scenarioName": item.get("scenario_name"),
+                "detailScenarioCode": item.get("detail_scenario_code"),
+                "detailScenarioName": item.get("detail_scenario_name"),
+                "parameters": item.get("parameters"),
+                "interaction": item.get("interaction"),
+                "mcpWorkflow": item.get("mcp_workflow"),
+            }
+            for item in matches
+        ],
+        "extractedParameters": [item.get("parameters") for item in matches],
+        "mcpRequests": [
+            {
+                "toolName": item.get("tool_name"),
+                "requestId": item.get("request_id"),
+                "arguments": item.get("arguments"),
+            }
+            for item in request_results
+        ],
+        "mcpWorkflowResults": [
+            {
+                "stepCode": item.get("workflow_step_code"),
+                "stepIndex": item.get("workflow_step_index"),
+                "stepCount": item.get("workflow_step_count"),
+                "isFinal": item.get("workflow_is_final"),
+                "executionMode": item.get("workflow_execution_mode"),
+                "itemIndex": item.get("workflow_item_index"),
+                "itemCount": item.get("workflow_item_count"),
+                "sourceStepCode": item.get("workflow_source_step_code"),
+                "isAggregate": item.get("workflow_is_aggregate"),
+                "inputMapper": item.get("workflow_input_mapper_code"),
+                "handlerCode": item.get("workflow_handler_code"),
+                "toolName": item.get("tool_name"),
+                "requestId": item.get("request_id"),
+                "arguments": item.get("arguments"),
+                "succeeded": item.get("succeeded"),
+                "outcome": item.get("outcome"),
+                "rawResult": item.get("result"),
+                "formattedResult": item.get("formatted_result"),
+                "error": item.get("error"),
+            }
+            for item in workflow_results
+        ],
+        "mcpWorkflowMapping": state.get("mcp_workflow_mapping"),
+        "mcpHandlerTrace": state.get("mcp_handler_trace"),
+        "mcpOutputTrace": state.get("mcp_output_trace"),
+        "mcpResults": [
+            {
+                "toolName": item.get("tool_name"),
+                "succeeded": item.get("succeeded"),
+                "outcome": item.get("outcome"),
+                "resultFormat": item.get("result_format"),
+                "rawResult": item.get("result"),
+                "formattedResult": item.get("formatted_result"),
+                "error": item.get("error"),
+            }
+            for item in mcp_results
+        ],
+        "status": state.get("status"),
+        "interrupt": state.get("interrupt"),
+        "humanInput": state.get("human_input"),
+    }
+
+
+def _sanitize_developer_value(value: Any, *, key: str | None = None) -> Any:
+    """state 구조는 유지하면서 인증·비밀 키 값만 강제로 마스킹한다."""
+
+    normalized_key = (key or "").casefold().replace("-", "_")
+    if any(
+        marker in normalized_key
+        for marker in ("access_token", "authorization", "api_key", "password", "secret")
+    ):
+        return "***REDACTED***"
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _sanitize_developer_value(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_developer_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _sanitize_developer_value(model_dump(mode="json"))
+    return str(value)
 
 
 def create_trace_recorder(
@@ -182,25 +538,23 @@ def _build_row(
     subagent = _mapping(state.get("subagent"))
     mcp = _mapping(state.get("mcp"))
     scenario_matches = [
-        _mapping(item) for item in subagent.get("matches", [])
+        _mapping(item)
+        for item in subagent.get("matches", [])
         if isinstance(item, Mapping)
     ]
     if not scenario_matches and subagent:
         scenario_matches = [subagent]
     mcp_results = [
-        _mapping(item) for item in state.get("mcp_results", [])
+        _mapping(item)
+        for item in state.get("mcp_results", [])
         if isinstance(item, Mapping)
     ]
     if not mcp_results and mcp:
         mcp_results = [mcp]
     interrupt = _mapping(state.get("interrupt"))
     values: dict[str, Any] = {
-        "최초요청일시": datetime.now().astimezone().isoformat(
-            timespec="milliseconds"
-        ),
-        "최종갱신일시": datetime.now().astimezone().isoformat(
-            timespec="milliseconds"
-        ),
+        "최초요청일시": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "최종갱신일시": datetime.now().astimezone().isoformat(timespec="milliseconds"),
         "현재단계": stage,
         "처리단계이력_JSON": _json_text([stage]),
         "프로젝트코드": project_code,
@@ -222,19 +576,21 @@ def _build_row(
             str(item.get("scenario_name", "")) for item in scenario_matches
         ),
         "세부시나리오코드": " | ".join(
-            str(item.get("detail_scenario_code", ""))
-            for item in scenario_matches
+            str(item.get("detail_scenario_code", "")) for item in scenario_matches
         ),
         "세부시나리오명": " | ".join(
-            str(item.get("detail_scenario_name", ""))
-            for item in scenario_matches
+            str(item.get("detail_scenario_name", "")) for item in scenario_matches
         ),
         "추출파라미터_JSON": _json_text(
-            [item.get("parameters") for item in scenario_matches]
+            [
+                _redact_match_parameters(
+                    item,
+                    str(subagent.get("agent_code", "")),
+                )
+                for item in scenario_matches
+            ]
         ),
-        "MCP도구명": " | ".join(
-            str(item.get("tool_name", "")) for item in mcp_results
-        ),
+        "MCP도구명": " | ".join(str(item.get("tool_name", "")) for item in mcp_results),
         "MCP추적ID": " | ".join(
             str(item.get("request_id", "")) for item in mcp_results
         ),
@@ -244,9 +600,7 @@ def _build_row(
         "MCP성공여부": " | ".join(
             str(item.get("succeeded", "")) for item in mcp_results
         ),
-        "MCP결과_JSON": _json_text(
-            [item.get("result") for item in mcp_results]
-        ),
+        "MCP결과_JSON": _json_text([item.get("result") for item in mcp_results]),
         "MCP결과형식": " | ".join(
             str(item.get("result_format", "")) for item in mcp_results
         ),
@@ -317,6 +671,28 @@ def _merge_row(
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _redact_match_parameters(
+    match: Mapping[str, Any],
+    agent_code: str = "",
+) -> dict[str, Any]:
+    """legacy interaction과 Python action의 민감 입력을 CSV에서 마스킹한다."""
+
+    from app.scenario_actions import redact_scenario_action_parameters
+
+    parameters = dict(_mapping(match.get("parameters")))
+    interaction = _mapping(match.get("interaction"))
+    for step_value in interaction.get("steps", []):
+        step = _mapping(step_value)
+        parameter_name = step.get("parameter_name")
+        if step.get("sensitive") and parameter_name in parameters:
+            parameters[str(parameter_name)] = "***MASKED***"
+    return redact_scenario_action_parameters(
+        agent_code,
+        str(match.get("detail_scenario_code", "")),
+        parameters,
+    )
 
 
 def _json_text(value: Any) -> str:

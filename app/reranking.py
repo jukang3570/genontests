@@ -69,8 +69,7 @@ class GenosRerankingService:
     def __init__(self, settings: Settings) -> None:
         if not settings.reranking_bearer_token:
             raise ValueError(
-                "RERANKING_ENABLED=true인 경우 "
-                "RERANKING_BEARER_TOKEN이 필요합니다."
+                "RERANKING_ENABLED=true인 경우 RERANKING_BEARER_TOKEN이 필요합니다."
             )
         self._url = settings.genos_reranking_url
         self._model = settings.reranking_model
@@ -80,9 +79,7 @@ class GenosRerankingService:
             timeout=settings.reranking_timeout_seconds,
             transport=httpx.AsyncHTTPTransport(retries=0),
             headers={
-                "Authorization": (
-                    f"Bearer {settings.reranking_bearer_token}"
-                ),
+                "Authorization": (f"Bearer {settings.reranking_bearer_token}"),
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },
@@ -116,14 +113,9 @@ class GenosRerankingService:
         if effective_top_n < 1:
             raise ValueError("Reranking top_n은 1 이상이어야 합니다.")
         if not 0 <= score_threshold <= 1:
-            raise ValueError(
-                "Reranking score_threshold는 0 이상 1 이하이어야 합니다."
-            )
+            raise ValueError("Reranking score_threshold는 0 이상 1 이하이어야 합니다.")
 
-        document_texts = [
-            _document_text(document)
-            for document in documents
-        ]
+        document_texts = [_document_text(document) for document in documents]
         payload = {
             "model": self._model,
             "query": query,
@@ -196,9 +188,7 @@ class GenosRerankingService:
             len(reranked),
             [item.get("document_id") for item in reranked],
             [
-                item.get("metadata", {})
-                .get("reranking", {})
-                .get("score")
+                item.get("metadata", {}).get("reranking", {}).get("score")
                 for item in reranked
             ],
         )
@@ -278,9 +268,7 @@ def _apply_rankings(
     ordered = sorted(rankings, key=lambda item: item["score"], reverse=True)
     seen: set[int] = set()
     output: list[dict[str, Any]] = []
-    filtered = [
-        item for item in ordered if float(item["score"]) >= score_threshold
-    ]
+    filtered = [item for item in ordered if float(item["score"]) >= score_threshold]
     for rank, item in enumerate(filtered[:top_n], start=1):
         index = int(item["index"])
         if index in seen:
