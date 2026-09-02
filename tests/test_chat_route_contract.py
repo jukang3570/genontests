@@ -4,11 +4,65 @@ import ast
 import unittest
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from app.api import create_app
+from app.config import Settings
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ChatRouteContractTests(unittest.TestCase):
+    @staticmethod
+    def _verification_app():
+        settings = Settings(
+            genos_url="http://localhost",
+            genos_serving_id=1,
+            genos_model="test-model",
+            genos_bearer_token=None,
+            prompt_version=None,
+            history_backend="memory",
+            redis_url="redis://localhost:6379/0",
+            redis_history_key_prefix="chat:history",
+            history_limit=10,
+            redis_dedupe_ttl_seconds=60,
+        )
+        unused_dependency = object()
+        return create_app(
+            settings=settings,
+            classifier=unused_dependency,
+            history_store=unused_dependency,
+            hitl_store=unused_dependency,
+            subagent_router=unused_dependency,
+            mcp_executor=unused_dependency,
+            trace_recorder=unused_dependency,
+            answer_service=unused_dependency,
+            recommended_question_registry=unused_dependency,
+            guardrail_client=unused_dependency,
+        )
+
+    def test_code_serving_verification_returns_json_without_auth(self) -> None:
+        response = TestClient(self._verification_app()).post(
+            "/chat",
+            json={"question": "__verify__"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/json")
+        self.assertEqual(
+            response.json(),
+            {"code": 0, "data": {"text": "verified"}},
+        )
+
+    def test_normal_chat_still_requires_bearer_auth(self) -> None:
+        response = TestClient(self._verification_app()).post(
+            "/chat",
+            json={"message": "실적을 알려줘"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
     def test_chat_is_the_only_post_route(self) -> None:
         api_path = ROOT / "app" / "api.py"
         tree = ast.parse(api_path.read_text(encoding="utf-8"))
