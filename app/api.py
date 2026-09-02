@@ -20,9 +20,9 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
-    Response,
     StreamingResponse,
 )
+from pydantic import ValidationError
 
 from app.answers import AnswerService, create_answer_service
 from app.classifier import IntentClassifier, create_classifier
@@ -44,9 +44,9 @@ from app.hitl_store import (
     create_hitl_state_store,
 )
 from app.models import (
-    CodeServingVerificationRequest,
     StreamingChatRequest,
     StreamingUser,
+    normalize_json_request_body,
 )
 from app.mcp.client import McpToolExecutor, create_mcp_tool_executor
 from app.observability import (
@@ -240,9 +240,6 @@ def create_app(
         missing_authorization = any(
             tuple(error.get("loc", ())) == ("header", "authorization")
             for error in exc.errors()
-        ) or (
-            request.url.path == "/chat"
-            and request.headers.get("authorization") is None
         )
         if missing_authorization:
             return JSONResponse(
@@ -430,27 +427,181 @@ def create_app(
             "langgraph_node_retries": "0",
         }
 
-    @app.post("/chat")
-    @timed("스트리밍 채팅 요청 접수")
-    async def stream_chat(
-        body: CodeServingVerificationRequest | StreamingChatRequest,
+    @app.post("/chat", response_model=None)
+    @timed("채팅 요청 계약 분기")
+    async def chat_dispatch(
+        request: Request,
         authorization: str | None = Header(default=None),
         x_debug_trace: str | None = Header(default=None, alias="X-Debug-Trace"),
-    ) -> Response:
-        """최종 WAS 연계 요청을 받아 간결한 SSE 이벤트로 처리한다.
+    ) -> dict[str, Any] | StreamingResponse | JSONResponse:
+        """코드서빙과 WAS 요청을 구분해 같은 SSE 파이프라인으로 연결한다."""
 
-        코드서빙 배포 검증 요청은 JSON으로 즉시 응답하고 실제 채팅 요청만
-        기존 Bearer 인증과 SSE 처리 흐름으로 진입한다.
+        raw_body = await _load_chat_request_body(request)
+        try:
+            normalized_body = normalize_json_request_body(
+                raw_body,
+                direct_fields={
+                    "question",
+                    "history",
+                    "overrideConfig",
+                    "message",
+                    "session_id",
+                    "thread_id",
+                    "endpoint",
+                    "agent_code",
+                    "recommendation_id",
+                    "humanInput",
+                    "human_input",
+                    "user",
+                },
+            )
+        except ValueError as exc:
+            raise _request_validation_error(
+                message=str(exc),
+                body=raw_body,
+            ) from exc
+
+        has_question = "question" in normalized_body
+        has_message = "message" in normalized_body
+        if has_question and has_message:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "AMBIGUOUS_CHAT_REQUEST",
+                    "message": "question과 message는 동시에 보낼 수 없습니다.",
+                },
+            )
+        if has_question:
+            return await code_serving_chat(normalized_body)
+
+        if not _has_bearer_token(authorization):
+            return _invalid_authorization_response(request)
+
+        try:
+            streaming_body = StreamingChatRequest.model_validate(normalized_body)
+        except ValidationError as exc:
+            raise _request_validation_error_from_pydantic(
+                exc,
+                body=normalized_body,
+            ) from exc
+        return await stream_chat(
+            streaming_body,
+            authorization or "",
+            x_debug_trace,
+        )
+
+    @timed("GenOS 코드서빙 워크플로우 채팅")
+    async def code_serving_chat(
+        body: dict[str, Any],
+    ) -> dict[str, Any] | StreamingResponse:
+        """코드서빙 일반 질문을 기존 WAS SSE 파이프라인으로 반환한다."""
+
+        raw_question = body.get("question")
+        question = raw_question.strip() if isinstance(raw_question, str) else ""
+        if question == "__verify__":
+            return {"code": 0, "data": {"text": "verified"}}
+        if not question:
+            return {
+                "code": 0,
+                "data": {"text": "[ERROR] question is empty"},
+            }
+
+        raw_override_config = body.get("overrideConfig")
+        override_config = (
+            raw_override_config
+            if isinstance(raw_override_config, dict)
+            else {}
+        )
+        session_id = _code_serving_identifier(
+            override_config.get("session_id")
+            or override_config.get("sessionId"),
+            prefix="session",
+        )
+        employee_id = _code_serving_identifier(
+            override_config.get("employee_id")
+            or override_config.get("employeeId")
+            or override_config.get("user_id")
+            or override_config.get("userId"),
+            prefix="codeserving",
+        )
+        raw_agent_code = (
+            override_config.get("agent_code")
+            or override_config.get("agentCode")
+        )
+        agent_code = (
+            raw_agent_code.strip().upper()
+            if isinstance(raw_agent_code, str) and raw_agent_code.strip()
+            else None
+        )
+        if agent_code is not None and agent_code not in prompt.agent_codes:
+            return {
+                "code": 0,
+                "data": {
+                    "text": (
+                        "[ERROR] 등록되지 않은 agent_code입니다: "
+                        f"{agent_code}"
+                    )
+                },
+            }
+
+        raw_access_token = (
+            override_config.get("access_token")
+            or override_config.get("accessToken")
+            or ""
+        )
+        access_token = (
+            raw_access_token.strip()
+            if isinstance(raw_access_token, str)
+            else ""
+        )
+        if access_token.casefold().startswith("bearer "):
+            access_token = access_token[7:].strip()
+
+        streaming_body = StreamingChatRequest.model_validate(
+            {
+                "message": question,
+                "session_id": session_id,
+                "thread_id": None,
+                "endpoint": settings.project_code,
+                "agent_code": agent_code,
+                "humanInput": [],
+                "user": {
+                    "id": employee_id,
+                    "deptcode": None,
+                    "deptname": None,
+                },
+            }
+        )
+        logger.info(
+            "======== 코드서빙 워크플로우 질문 도착 | 질문길이=%d | "
+            "선택에이전트=%s | 전달이력개수=%d",
+            len(question),
+            agent_code or "선택하지 않음",
+            len(body.get("history", []))
+            if isinstance(body.get("history"), list)
+            else 0,
+        )
+        return await stream_chat(
+            streaming_body,
+            f"Bearer {access_token}" if access_token else "",
+            None,
+            allow_missing_authorization=True,
+        )
+
+    @timed("스트리밍 채팅 요청 접수")
+    async def stream_chat(
+        body: StreamingChatRequest,
+        authorization: str,
+        x_debug_trace: str | None = None,
+        *,
+        allow_missing_authorization: bool = False,
+    ) -> StreamingResponse:
+        """최종 WAS 연계 요청을 받아 간결한 SSE 이벤트로 처리한다.
 
         외부 응답에는 프론트 동작에 필요한 식별자·메시지·답변·action만 보낸다.
         마스터/서브에이전트 분류, 시나리오, 파라미터와 MCP 세부 결과는 모두
         request_id 문맥이 붙은 서버 로그로 추적한다.
         """
-
-        if isinstance(body, CodeServingVerificationRequest):
-            return JSONResponse(
-                content={"code": 0, "data": {"text": "verified"}},
-            )
 
         debug_trace_enabled = _debug_trace_requested(x_debug_trace)
         trace_started_at = perf_counter()
@@ -524,11 +675,7 @@ def create_app(
             ),
         )
 
-        if authorization is None or not authorization.casefold().startswith(
-            "bearer "
-        ) or not (
-            authorization[7:].strip()
-        ):
+        if not _has_bearer_token(authorization) and not allow_missing_authorization:
             raise HTTPException(
                 status_code=401,
                 detail={
@@ -536,13 +683,21 @@ def create_app(
                     "message": "Authorization 헤더에 Bearer 토큰이 필요합니다.",
                 },
             )
-        access_token = authorization[7:].strip()
+        access_token = (
+            authorization[7:].strip()
+            if _has_bearer_token(authorization)
+            else ""
+        )
         trace_checkpoint(
             stage_code="AUTHORIZATION_VALIDATED",
             stage="Bearer 인증 헤더 검증",
             file="app/api.py",
             function="create_app.stream_chat",
-            details={"scheme": "Bearer", "tokenPresent": True},
+            details={
+                "scheme": "Bearer" if access_token else None,
+                "tokenPresent": bool(access_token),
+                "codeServingBypass": allow_missing_authorization,
+            },
             customization_hint=(
                 "Authorization 입력 정책은 app/api.py의 stream_chat 시작 부분을 "
                 "수정하세요. 토큰 원문은 추적 화면에 표시하지 않습니다."
@@ -1591,6 +1746,94 @@ def create_app(
         )
 
     return app
+
+
+async def _load_chat_request_body(request: Request) -> Any:
+    """요청 JSON을 읽고 파싱 실패를 FastAPI 검증 오류 형식으로 변환한다."""
+
+    try:
+        return await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise _request_validation_error(
+            message="요청 본문은 유효한 UTF-8 JSON이어야 합니다.",
+            body=None,
+            error_type="json_invalid",
+        ) from exc
+
+
+def _request_validation_error(
+    *,
+    message: str,
+    body: Any,
+    error_type: str = "value_error",
+) -> RequestValidationError:
+    """수동 디스패처 오류를 기존 RequestValidationError 처리기로 전달한다."""
+
+    return RequestValidationError(
+        [
+            {
+                "type": error_type,
+                "loc": ("body",),
+                "msg": message,
+                "input": body,
+                "ctx": {"error": message},
+            }
+        ],
+        body=body,
+    )
+
+
+def _request_validation_error_from_pydantic(
+    exc: ValidationError,
+    *,
+    body: Any,
+) -> RequestValidationError:
+    """Pydantic 필드 위치 앞에 HTTP body 위치를 붙여 기존 로그 계약을 유지한다."""
+
+    errors: list[dict[str, Any]] = []
+    for original in exc.errors():
+        error = dict(original)
+        error["loc"] = ("body", *tuple(original.get("loc", ())))
+        errors.append(error)
+    return RequestValidationError(errors, body=body)
+
+
+def _has_bearer_token(value: str | None) -> bool:
+    """비어 있지 않은 Bearer 인증 헤더인지 반환한다."""
+
+    return bool(
+        isinstance(value, str)
+        and value.casefold().startswith("bearer ")
+        and value[7:].strip()
+    )
+
+
+def _invalid_authorization_response(request: Request) -> JSONResponse:
+    """WAS SSE 분기의 기존 Authorization 누락 응답을 유지한다."""
+
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": {
+                "code": "INVALID_AUTHORIZATION",
+                "message": "Authorization 헤더에 Bearer 토큰이 필요합니다.",
+                "request_id": request.headers.get("x-request-id", str(uuid4())),
+            }
+        },
+    )
+
+
+def _code_serving_identifier(value: Any, *, prefix: str) -> str:
+    """외부 코드서빙 식별자를 내부 Redis 키에 사용할 값으로 정규화한다."""
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", normalized):
+            return normalized
+        if normalized:
+            digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+            return f"{prefix}_{digest}"
+    return f"{prefix}_{uuid4().hex}"
 
 
 def _guardrail_context(

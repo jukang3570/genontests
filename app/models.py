@@ -3,7 +3,7 @@
 import ast
 import json
 from collections.abc import Collection, Mapping
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -117,21 +117,6 @@ class StreamingUser(BaseModel):
         if value is None:
             return None
         return str(value).strip() or None
-
-
-class CodeServingVerificationRequest(BaseModel):
-    """GenOS 코드서빙 배포 단계에서 보내는 워크플로우 검증 요청."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    question: Literal["__verify__"]
-
-    @model_validator(mode="before")
-    @classmethod
-    def unwrap_input_envelope(cls, value: Any) -> Any:
-        """직접 JSON과 코드서빙 ``input`` envelope를 모두 허용한다."""
-
-        return normalize_json_request_body(value, direct_fields={"question"})
 
 
 class StreamingChatRequest(BaseModel):

@@ -1,8 +1,9 @@
 # 프론트 입력·출력 계약
 
 이 문서는 현재 코드에 실제로 존재하는 HTTP 계약만 설명한다. 외부 Redis
-조회·삭제 API와 과거 `/v1/chat`, `/v1/chat/stream` 비스트리밍·구버전 경로는
-제거되었으며, Redis는 대화 이력과 HITL 상태를 위한 내부 구현으로만 사용한다.
+조회·삭제 API와 과거 `/v1/chat`, `/v1/chat/stream` 경로는 제거되었다. 단일
+`POST /chat`은 최상위 `message`와 `question` 중 어느 키가 있는지에 따라 WAS
+또는 코드서빙 입력 계약으로 분기하며, 일반 질문은 모두 SSE로 응답한다.
 
 ## 1. 현재 엔드포인트
 
@@ -11,25 +12,19 @@
 | GET | `/tester` | SSE·action 진단 목업 | 없음 | HTML |
 | GET | `/chatting` | `/chat` 단순 채팅 목업 | 없음 | HTML |
 | GET | `/health` | 배포 상태 확인 | 없음 | JSON |
-| POST | `/chat` | 코드서빙 검증·운영 채팅 API | 일반 채팅 Bearer 필수 | 검증 JSON / 채팅 SSE |
+| POST | `/chat` | `message` 기반 운영 프론트 | Bearer 필수 | SSE |
+| POST | `/chat` | `question` 기반 코드서빙 | Gateway 인증 | SSE (`__verify__`만 JSON) |
 
 라우트는 [`create_app()`](../app/api.py) 안에서 선언한다. `/tester`에 필요한
 agent 목록과 backend 정보는 별도 metadata API를 호출하지 않고, 서버가 HTML의
 `__SC_AX_TESTER_BOOTSTRAP__` 자리에 JSON을 주입한다.
 
-## 2. `/chat` 입력
+## 2. WAS SSE `/chat` 입력
 
-일반 채팅 검증 모델은 [`StreamingChatRequest`](../app/models.py)다.
+검증 모델은 [`StreamingChatRequest`](../app/models.py)다.
 
-GenOS 코드서빙 배포 검증은 인증 헤더 없이 아래 본문을 보내며, 이 요청만
-`{"code":0,"data":{"text":"verified"}}` JSON으로 즉시 응답한다.
-
-```json
-{"question": "__verify__"}
-```
-
-이는 요청 순서가 아니라 `question`의 예약값으로 판별한다. 실제 채팅은 아래
-`message` 계약과 Bearer 인증을 사용하고 기존 SSE 흐름으로 처리한다.
+최상위에 `question`과 `message`를 동시에 보내면 `422
+AMBIGUOUS_CHAT_REQUEST`로 거절한다.
 
 | JSON 키 | 타입 | 키 생략 | null | 의미 |
 |---|---|---:|---:|---|
@@ -145,7 +140,44 @@ GenOS 코드서빙 배포 검증은 인증 헤더 없이 아래 본문을 보내
 }
 ```
 
-## 3. bytes처럼 보이는 입력의 정규화
+## 3. 코드서빙 SSE `/chat` 입력
+
+코드서빙 요청은 다음 계약을 사용하며 Authorization 헤더를 애플리케이션에서
+강제하지 않는다. 외부 접근 인증은 코드서빙 Gateway가 담당한다.
+
+```json
+{
+  "question": "원천징수 내역을 조회해줘",
+  "history": [],
+  "overrideConfig": {
+    "employee_id": "K3003980",
+    "session_id": "workflow-session",
+    "agent_code": "PERFORMANCE_FEE",
+    "access_token": "업무 API 토큰"
+  }
+}
+```
+
+배포 검증용 `question: "__verify__"`는 그래프를 실행하지 않고 다음 JSON을
+반환한다.
+
+```json
+{"code": 0, "data": {"text": "verified"}}
+```
+
+일반 질문은 기존 SSE 파이프라인을 그대로 반환한다. 응답 헤더는
+`Content-Type: text/event-stream`이며, 프레임 형식과 이벤트 순서는 5절의 WAS
+SSE 계약과 같다.
+
+```text
+data: {"event":"token","data":"답변 일부"}
+
+data: {"event":"messages","data":[...]}
+
+data: {"event":"end","data":{"status":"PASS",...}}
+```
+
+## 4. bytes처럼 보이는 입력의 정규화
 
 입력 변환의 단일 위치는 [`normalize_json_request_body()`](../app/models.py)다.
 다음 형태를 모두 같은 JSON object로 복원한다.
@@ -172,7 +204,7 @@ body에 쓰면 bytes가 아니라 문자열이다. 이 서버는 외부 gateway�
 `{"input": "b'...'"}`도 가능하다. 반면 최상위에 정상 요청 필드가 이미 있으면
 그 객체를 직접 요청으로 보므로 업무용 `input` 필드와 envelope가 충돌하지 않는다.
 
-## 4. SSE wire format
+## 5. SSE wire format
 
 헤더는 다음과 같다.
 
@@ -195,7 +227,7 @@ data: {"event":"token","data":"답변 일부"}
 직렬화 위치는 [`encode_sse()`](../app/streaming.py)다. 프론트는 빈 줄을 기준으로
 frame을 나눈 뒤 JSON을 파싱하고 `event` 값으로 분기한다.
 
-## 5. 이벤트별 output 유입 위치
+## 6. 이벤트별 output 유입 위치
 
 | event | data | 값이 만들어지는 곳 | 프론트 용도 |
 |---|---|---|---|
@@ -229,7 +261,7 @@ request_id → session_id → thread_id → messages(빈 assistant)
 끝난다. 검증/내부 처리 오류도 가능한 한 HTTP 200 SSE 안전 답변으로 변환하지만,
 Authorization 누락은 HTTP 401이다.
 
-## 6. `messages`와 화면 확장 데이터
+## 7. `messages`와 화면 확장 데이터
 
 완성 assistant 메시지는 다음 구조다.
 
@@ -268,7 +300,7 @@ Authorization 누락은 HTTP 401이다.
 detail별 formatter에서 생성한다. 프론트 분기는 목업의
 `renderMessageRenderables()`와 `renderTableRenderable()`을 참고한다.
 
-## 7. 추천질문과 `네` 처리
+## 8. 추천질문과 `네` 처리
 
 `interactionType`은 두 종류다.
 
@@ -287,7 +319,7 @@ detail별 formatter에서 생성한다. 프론트 분기는 목업의
 하나를 클릭하면 `recommendation_id`로 정확히 선택하므로 “최신 질문”을 임의로
 고르는 일이 없다.
 
-## 8. `action` 출력과 재진입
+## 9. `action` 출력과 재진입
 
 [`build_action_event()`](../app/streaming.py)이 내부 interrupt를 프론트 구조로
 변환한다.
@@ -327,15 +359,16 @@ context는 운영 action output에 포함하지 않는다.
 5. 새 action이 오면 이전 action UI를 교체한다.
 6. action 완료 전 같은 버튼을 중복 전송하지 않는다.
 
-## 9. 단일 `/chat` 계약
+## 10. 단일 `/chat` 경로의 이중 계약
 
-채팅 POST 경로는 `/chat` 하나뿐이다. `question == "__verify__"`인 코드서빙 검증
-요청만 JSON으로 응답한다. 그 외 실제 채팅 요청은 `StreamingChatRequest`와 SSE를
-사용하며 `token`, 완성 `messages`, `renderables`, `sourceDocuments`,
-`recommendedQuestions`, `action`을 모두 이 경로에서 처리한다. 일반 채팅용 과거
-JSON 응답과 `/v1/chat/stream` alias는 제공하지 않는다.
+채팅 POST 경로는 `/chat` 하나뿐이다. 최상위 `message` 요청은
+`StreamingChatRequest`로 검증하고, 최상위 `question` 요청은 코드서빙 입력을 같은
+모델로 변환한다. 두 일반 질문 모두 동일한 SSE 파이프라인을 반환하므로 가드레일,
+그래프, 이력 저장과 최종 답변 정책은 중복 구현하지 않는다. 코드서빙 배포 확인용
+`__verify__`만 JSON `{code,data.text}`를 반환하며 `/v1/chat/stream` alias는 제공하지
+않는다.
 
-## 10. 프론트 필드나 이벤트를 추가하는 순서
+## 11. 프론트 필드나 이벤트를 추가하는 순서
 
 입력 필드 추가:
 
