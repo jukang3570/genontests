@@ -1,4 +1,4 @@
-"""동일한 POST /chat에서 코드서빙 JSON과 WAS SSE 계약을 분기한다."""
+"""동일한 POST /chat에서 코드서빙과 WAS의 SSE 계약을 검증한다."""
 
 import unittest
 
@@ -66,7 +66,7 @@ class ChatDispatchTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "application/json")
         self.assertEqual(response.json(), {"code": 0, "data": {"text": "verified"}})
 
-    def test_code_serving_question_collects_internal_sse_as_json(self) -> None:
+    def test_code_serving_question_returns_sse_without_authorization(self) -> None:
         response = self.client.post(
             "/chat",
             json={
@@ -80,9 +80,12 @@ class ChatDispatchTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["content-type"], "application/json")
-        self.assertEqual(response.json()["code"], 0)
-        self.assertTrue(response.json()["data"]["text"])
+        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+        self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+        self.assertEqual(response.headers["x-accel-buffering"], "no")
+        self.assertIn('"event":"token"', response.text)
+        self.assertIn('"event":"messages"', response.text)
+        self.assertIn('"event":"end"', response.text)
 
     def test_was_message_keeps_the_existing_sse_contract(self) -> None:
         response = self.client.post(

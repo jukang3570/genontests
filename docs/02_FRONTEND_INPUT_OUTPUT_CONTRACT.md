@@ -3,7 +3,7 @@
 이 문서는 현재 코드에 실제로 존재하는 HTTP 계약만 설명한다. 외부 Redis
 조회·삭제 API와 과거 `/v1/chat`, `/v1/chat/stream` 경로는 제거되었다. 단일
 `POST /chat`은 최상위 `message`와 `question` 중 어느 키가 있는지에 따라 WAS
-SSE 또는 코드서빙 JSON으로 분기한다.
+또는 코드서빙 입력 계약으로 분기하며, 일반 질문은 모두 SSE로 응답한다.
 
 ## 1. 현재 엔드포인트
 
@@ -13,7 +13,7 @@ SSE 또는 코드서빙 JSON으로 분기한다.
 | GET | `/chatting` | `/chat` 단순 채팅 목업 | 없음 | HTML |
 | GET | `/health` | 배포 상태 확인 | 없음 | JSON |
 | POST | `/chat` | `message` 기반 운영 프론트 | Bearer 필수 | SSE |
-| POST | `/chat` | `question` 기반 코드서빙 | Gateway 인증 | JSON |
+| POST | `/chat` | `question` 기반 코드서빙 | Gateway 인증 | SSE (`__verify__`만 JSON) |
 
 라우트는 [`create_app()`](../app/api.py) 안에서 선언한다. `/tester`에 필요한
 agent 목록과 backend 정보는 별도 metadata API를 호출하지 않고, 서버가 HTML의
@@ -140,7 +140,7 @@ AMBIGUOUS_CHAT_REQUEST`로 거절한다.
 }
 ```
 
-## 3. 코드서빙 JSON `/chat` 입력
+## 3. 코드서빙 SSE `/chat` 입력
 
 코드서빙 요청은 다음 계약을 사용하며 Authorization 헤더를 애플리케이션에서
 강제하지 않는다. 외부 접근 인증은 코드서빙 Gateway가 담당한다.
@@ -165,11 +165,16 @@ AMBIGUOUS_CHAT_REQUEST`로 거절한다.
 {"code": 0, "data": {"text": "verified"}}
 ```
 
-일반 질문은 기존 SSE 파이프라인을 내부에서 끝까지 실행한 뒤 최종 답변을 모아
-다음 JSON 계약으로 반환한다.
+일반 질문은 기존 SSE 파이프라인을 그대로 반환한다. 응답 헤더는
+`Content-Type: text/event-stream`이며, 프레임 형식과 이벤트 순서는 5절의 WAS
+SSE 계약과 같다.
 
-```json
-{"code": 0, "data": {"text": "최종 답변"}}
+```text
+data: {"event":"token","data":"답변 일부"}
+
+data: {"event":"messages","data":[...]}
+
+data: {"event":"end","data":{"status":"PASS",...}}
 ```
 
 ## 4. bytes처럼 보이는 입력의 정규화
@@ -357,10 +362,11 @@ context는 운영 action output에 포함하지 않는다.
 ## 10. 단일 `/chat` 경로의 이중 계약
 
 채팅 POST 경로는 `/chat` 하나뿐이다. 최상위 `message` 요청은
-`StreamingChatRequest`로 검증해 SSE로 처리하고, 최상위 `question` 요청은 코드서빙
-계약으로 처리해 JSON `{code,data.text}`를 반환한다. 코드서빙 일반 질문도 내부에서
-동일한 SSE 파이프라인을 끝까지 실행하므로 가드레일, 그래프, 이력 저장과 최종 답변
-정책은 중복 구현하지 않는다. `/v1/chat/stream` alias는 제공하지 않는다.
+`StreamingChatRequest`로 검증하고, 최상위 `question` 요청은 코드서빙 입력을 같은
+모델로 변환한다. 두 일반 질문 모두 동일한 SSE 파이프라인을 반환하므로 가드레일,
+그래프, 이력 저장과 최종 답변 정책은 중복 구현하지 않는다. 코드서빙 배포 확인용
+`__verify__`만 JSON `{code,data.text}`를 반환하며 `/v1/chat/stream` alias는 제공하지
+않는다.
 
 ## 11. 프론트 필드나 이벤트를 추가하는 순서
 

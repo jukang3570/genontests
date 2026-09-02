@@ -62,7 +62,7 @@ JSON으로 처리한다. 활성 업무는 `PERFORMANCE_FEE`, `RP`, `QUALIFICATIO
 
 | route | 역할 |
 |---|---|
-| `POST /chat` | `message`는 WAS SSE, `question`은 코드서빙 JSON으로 분기 |
+| `POST /chat` | `message`와 `question` 입력을 같은 SSE 파이프라인으로 연결 |
 | `GET /health` | 실행 설정 상태 |
 | `GET /tester` | 상세 개발 추적 화면 |
 | `GET /chatting` | 채팅과 trace 통합 화면 |

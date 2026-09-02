@@ -434,7 +434,7 @@ def create_app(
         authorization: str | None = Header(default=None),
         x_debug_trace: str | None = Header(default=None, alias="X-Debug-Trace"),
     ) -> dict[str, Any] | StreamingResponse | JSONResponse:
-        """코드서빙 JSON 요청과 WAS SSE 요청을 본문 필드로 구분한다."""
+        """코드서빙과 WAS 요청을 구분해 같은 SSE 파이프라인으로 연결한다."""
 
         raw_body = await _load_chat_request_body(request)
         try:
@@ -491,8 +491,10 @@ def create_app(
         )
 
     @timed("GenOS 코드서빙 워크플로우 채팅")
-    async def code_serving_chat(body: dict[str, Any]) -> dict[str, Any]:
-        """코드서빙 계약을 기존 WAS SSE 파이프라인에 연결해 JSON으로 반환한다."""
+    async def code_serving_chat(
+        body: dict[str, Any],
+    ) -> dict[str, Any] | StreamingResponse:
+        """코드서빙 일반 질문을 기존 WAS SSE 파이프라인으로 반환한다."""
 
         raw_question = body.get("question")
         question = raw_question.strip() if isinstance(raw_question, str) else ""
@@ -579,16 +581,12 @@ def create_app(
             if isinstance(body.get("history"), list)
             else 0,
         )
-        streaming_response = await stream_chat(
+        return await stream_chat(
             streaming_body,
             f"Bearer {access_token}" if access_token else "",
             None,
             allow_missing_authorization=True,
         )
-        answer = await _answer_from_streaming_response(streaming_response)
-        if not answer:
-            answer = "조회 결과가 없습니다. 잠시 후 다시 시도해 주세요."
-        return {"code": 0, "data": {"text": answer}}
 
     @timed("스트리밍 채팅 요청 접수")
     async def stream_chat(
@@ -1822,79 +1820,6 @@ def _invalid_authorization_response(request: Request) -> JSONResponse:
                 "request_id": request.headers.get("x-request-id", str(uuid4())),
             }
         },
-    )
-
-
-async def _answer_from_streaming_response(response: StreamingResponse) -> str:
-    """내부 SSE 응답을 끝까지 소비해 코드서빙용 최종 텍스트를 추출한다."""
-
-    chunks: list[str] = []
-    async for chunk in response.body_iterator:
-        if isinstance(chunk, bytes):
-            chunks.append(chunk.decode("utf-8"))
-        else:
-            chunks.append(str(chunk))
-    return _answer_from_sse_text("".join(chunks))
-
-
-def _answer_from_sse_text(value: str) -> str:
-    """SSE token/messages/action/error 이벤트에서 사용자에게 보여 줄 문구를 고른다."""
-
-    token_parts: list[str] = []
-    completed_answer = ""
-    action_message = ""
-    error_message = ""
-    for frame in re.split(r"\r?\n\r?\n", value):
-        event_name = ""
-        data_lines: list[str] = []
-        for line in frame.splitlines():
-            if line.startswith("event:"):
-                event_name = line[6:].strip()
-            elif line.startswith("data:"):
-                data_lines.append(line[5:].lstrip())
-        if not data_lines:
-            continue
-        raw_data = "\n".join(data_lines)
-        try:
-            data = json.loads(raw_data)
-        except json.JSONDecodeError:
-            data = raw_data
-        if (
-            not event_name
-            and isinstance(data, dict)
-            and isinstance(data.get("event"), str)
-        ):
-            event_name = data["event"]
-            data = data.get("data")
-        if not event_name:
-            continue
-
-        if event_name == "token" and isinstance(data, str):
-            token_parts.append(data)
-        elif event_name == "messages" and isinstance(data, list):
-            for message in reversed(data):
-                if not isinstance(message, dict):
-                    continue
-                if str(message.get("role", "")).casefold() != "assistant":
-                    continue
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    completed_answer = content.strip()
-                    break
-        elif event_name == "action" and isinstance(data, dict):
-            message = data.get("message")
-            if isinstance(message, str) and message.strip():
-                action_message = message.strip()
-        elif event_name == "error" and isinstance(data, dict):
-            message = data.get("message")
-            if isinstance(message, str) and message.strip():
-                error_message = message.strip()
-
-    return (
-        completed_answer
-        or "".join(token_parts).strip()
-        or action_message
-        or error_message
     )
 
 
