@@ -1,4 +1,4 @@
-"""Code-serving revision 1 test API."""
+"""Code-serving revision test API."""
 
 import os
 
@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 
 
-REVISION_MESSAGE = "코드서빙 리비전 버전 1입니다."
+REVISION_MESSAGE = "코드서빙입니다 2"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
