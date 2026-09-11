@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI
 
 
-REVISION_MESSAGE = "코드서빙입니다 2"
+REVISION_MESSAGE = "코드서빙입니다 1"
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 

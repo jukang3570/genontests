@@ -8,7 +8,7 @@ GenOS 상태 확인을 위한 `GET /health`는 `{"status":"ok"}`를 반환합니
 {
   "code": 0,
   "data": {
-    "text": "코드서빙입니다 2"
+    "text": "코드서빙입니다 1"
   }
 }
 ```
