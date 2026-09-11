@@ -11,6 +11,11 @@ REVISION_MESSAGE = "코드서빙입니다 2"
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/chat")
 async def chat():
     return {"code": 0, "data": {"text": REVISION_MESSAGE}}

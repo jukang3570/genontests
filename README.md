@@ -2,6 +2,8 @@
 
 `POST /chat`을 호출하면 항상 아래 JSON을 반환하는 최소 FastAPI 서비스입니다.
 
+GenOS 상태 확인을 위한 `GET /health`는 `{"status":"ok"}`를 반환합니다.
+
 ```json
 {
   "code": 0,
