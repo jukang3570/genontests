@@ -78,6 +78,7 @@ class _ReadableMultilineFormatter(logging.Formatter):
             (
                 "======== 단계 시작",
                 "======== 요청 도착",
+                "======== 요청 헤더",
                 "======== 애플리케이션 시작",
                 "!!!!!!!! 실패 진단",
                 "!!!!!!!! 처리 중단 진단",
@@ -526,3 +527,86 @@ def _elapsed_seconds(started: float) -> float:
     """perf_counter 시작값을 기준으로 경과시간을 초 단위로 반환한다."""
 
     return time.perf_counter() - started
+
+
+# 요청 헤더 로그에서 값 전체를 남기지 않을 헤더. 토큰·쿠키가 컨테이너 로그에
+# 그대로 남지 않도록 앞뒤 일부와 길이만 출력해 어떤 값인지 식별만 가능하게 한다.
+_SENSITIVE_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+        "x-auth-token",
+        "x-access-token",
+    }
+)
+# 헬스체크 프로브는 수 초마다 호출되므로 헤더 로그 대상에서 제외한다.
+_HEADER_LOG_SKIP_PATHS = frozenset({"/health"})
+
+
+def _mask_header_value(value: str) -> str:
+    """민감 헤더 값은 스킴과 앞뒤 일부, 전체 길이만 남긴다."""
+
+    scheme = ""
+    token = value
+    if " " in value:
+        scheme, token = value.split(" ", 1)
+        scheme = f"{scheme} "
+    if len(token) <= 12:
+        return f"{scheme}***(len={len(token)})"
+    return f"{scheme}{token[:6]}...{token[-4:]}(len={len(token)})"
+
+
+class RequestHeaderLoggingMiddleware:
+    """수신한 모든 HTTP 요청의 메서드·경로·헤더를 컨테이너 로그에 남긴다.
+
+    코드서빙 게이트웨이가 어떤 헤더를 붙여 전달하는지 확인하기 위한 진단용
+    순수 ASGI 미들웨어다. 요청 본문과 응답 스트림에는 관여하지 않으므로
+    SSE 응답에도 영향을 주지 않는다. 같은 이름의 헤더가 여러 번 오면 리스트로
+    묶어 모두 출력한다.
+    """
+
+    def __init__(self, app: Any, *, mask_sensitive: bool = True) -> None:
+        self.app = app
+        self.mask_sensitive = mask_sensitive
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("path") not in _HEADER_LOG_SKIP_PATHS:
+            try:
+                self._log_request(scope)
+            except Exception:  # 진단 로그 실패가 요청 처리를 막지 않게 한다.
+                logger.exception("요청 헤더 로그 출력 실패")
+        await self.app(scope, receive, send)
+
+    def _log_request(self, scope: dict[str, Any]) -> None:
+        headers: dict[str, Any] = {}
+        for raw_name, raw_value in scope.get("headers", []):
+            name = raw_name.decode("latin-1").lower()
+            value = raw_value.decode("latin-1")
+            if self.mask_sensitive and name in _SENSITIVE_HEADER_NAMES:
+                value = _mask_header_value(value)
+            if name in headers:
+                existing = headers[name]
+                headers[name] = (
+                    [*existing, value] if isinstance(existing, list) else [existing, value]
+                )
+            else:
+                headers[name] = value
+
+        client = scope.get("client")
+        logger.info(
+            "======== 요청 헤더 | method=%s | path=%s | query=%s | client=%s | "
+            "scheme=%s | http_version=%s | root_path=%s | 헤더수=%d | headers=%s",
+            scope.get("method"),
+            scope.get("path"),
+            scope.get("query_string", b"").decode("latin-1") or "-",
+            f"{client[0]}:{client[1]}" if client else "-",
+            scope.get("scheme"),
+            scope.get("http_version"),
+            scope.get("root_path") or "-",
+            len(scope.get("headers", [])),
+            headers,
+        )

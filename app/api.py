@@ -56,6 +56,7 @@ from app.observability import (
     log_context,
     log_failure_diagnostic,
     logger,
+    RequestHeaderLoggingMiddleware,
     timed,
 )
 from app.prompt_loader import PromptBundleLoader
@@ -210,6 +211,16 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 코드서빙 게이트웨이가 전달하는 요청 헤더 확인용 진단 로그. CORS보다 나중에
+    # 추가해 가장 바깥에서 실행되므로 OPTIONS preflight 요청 헤더도 기록한다.
+    # LOG_REQUEST_HEADERS=false로 끄고, LOG_REQUEST_HEADERS_MASK=false로 토큰 원문을 출력한다.
+    if os.getenv("LOG_REQUEST_HEADERS", "true").strip().casefold() in {"1", "true", "yes", "on"}:
+        app.add_middleware(
+            RequestHeaderLoggingMiddleware,
+            mask_sensitive=os.getenv("LOG_REQUEST_HEADERS_MASK", "true").strip().casefold()
+            not in {"0", "false", "no", "off"},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error_handler(
